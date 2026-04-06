@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  ai-interview-app:
+    build: .
+    ports:
+      - "7001:3000"
+    environment:
+      - NODE_ENV=production
+    restart: always
