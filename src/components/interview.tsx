@@ -286,7 +286,7 @@ async function extractTextFromFile(file: File): Promise<string> {
   if (file.type === 'application/pdf') {
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch('/api/extract-pdf', { method: 'POST', body: fd });
+    const res = await fetch('/ai-interview/api/extract-pdf', { method: 'POST', body: fd });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     return (data.text as string).slice(0, 8000);
@@ -661,7 +661,7 @@ DO NOT say function names, tool names, or any technical terms aloud. Ever.`;
     setMemStatus('saving');
 
     try {
-      const res = await fetch('/api/summarize-notes', {
+      const res = await fetch('/ai-interview/api/summarize-notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -732,7 +732,7 @@ TASK: ${task}`.trim();
         const timeout = new Promise<never>((_, rej) =>
           setTimeout(() => rej(new Error('timeout')), ESCALATION_TIMEOUT_MS),
         );
-        const fetch_p = fetch('/api/escalate', {
+        const fetch_p = fetch('/ai-interview/api/escalate', {
           method: 'POST',
           signal: ac.signal,
           headers: { 'Content-Type': 'application/json' },
@@ -994,7 +994,7 @@ TASK: ${task}`.trim();
             const topic = (args.topic as string) || 'general background';
             setCvLookup(true);
 
-            fetch('/api/escalate', {
+            fetch('/ai-interview/api/escalate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1135,7 +1135,7 @@ TASK: ${task}`.trim();
 
         // Auto-extract candidate name
         try {
-          const res = await fetch('/api/escalate', {
+          const res = await fetch('/ai-interview/api/escalate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1205,7 +1205,7 @@ TASK: ${task}`.trim();
     // Pre-summarize CV (saves tokens in every RT system prompt)
     if (cvText) {
       try {
-        const res = await fetch('/api/escalate', {
+        const res = await fetch('/ai-interview/api/escalate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1227,7 +1227,7 @@ TASK: ${task}`.trim();
 
     try {
       // Get ephemeral RT token
-      const tokenRes = await fetch('/api/realtime-token', {
+      const tokenRes = await fetch('/ai-interview/api/realtime-token', {
         method: 'POST', signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ voice: 'shimmer' }),

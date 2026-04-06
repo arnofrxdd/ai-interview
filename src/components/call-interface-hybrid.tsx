@@ -215,7 +215,7 @@ export default function CallInterfaceHybrid({
         try {
             const fd = new FormData();
             fd.append('audio', blob, 'rec.webm');
-            const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+            const res = await fetch('/ai-interview/api/transcribe', { method: 'POST', body: fd });
             const data = await res.json();
 
             if (!data.text?.trim()) { startListening(); return; }
@@ -239,7 +239,7 @@ export default function CallInterfaceHybrid({
         setPhase('thinking');
 
         try {
-            const res = await fetch('/api/chat-voice', {
+            const res = await fetch('/ai-interview/api/chat-voice', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ messages, systemInstruction: agent.systemInstruction }),
@@ -276,7 +276,7 @@ export default function CallInterfaceHybrid({
         usageRef.current.ttsCharacters += text.length;
 
         try {
-            const res = await fetch('/api/speak', {
+            const res = await fetch('/ai-interview/api/speak', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text, voice: agent.voiceId || 'alloy' }),

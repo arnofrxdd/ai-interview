@@ -502,7 +502,7 @@ VOICE BEHAVIOR RULES:
             setStatus('Connecting...');
 
             // 1. Ephemeral token
-            const tokenRes = await fetch('/api/realtime-token', {
+            const tokenRes = await fetch('/ai-interview/api/realtime-token', {
                 method: 'POST',
                 signal,
                 body: JSON.stringify({ voice: agent.voiceId || 'alloy' }),
@@ -817,7 +817,7 @@ VOICE BEHAVIOR RULES:
                             isSummarizingRef.current = true;
                             setMemoryActivity('adding');
                             const recentMessages = convHistoryRef.current.slice(-12);
-                            fetch('/api/summarize-notes', {
+                            fetch('/ai-interview/api/summarize-notes', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
@@ -1030,7 +1030,7 @@ VOICE BEHAVIOR RULES:
                     throw new Error('timeout');
                 });
 
-                const fetchPromise = fetch('/api/escalate', {
+                const fetchPromise = fetch('/ai-interview/api/escalate', {
                     method: 'POST',
                     signal: ac.signal,
                     headers: { 'Content-Type': 'application/json' },

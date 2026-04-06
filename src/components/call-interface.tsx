@@ -101,7 +101,7 @@ export default function CallInterface({
             setStatus('Initializing...');
 
             // 1. Get Ephemeral Token
-            const tokenResponse = await fetch('/api/realtime-token', {
+            const tokenResponse = await fetch('/ai-interview/api/realtime-token', {
                 method: 'POST',
                 signal,
                 body: JSON.stringify({ voice: agent.voiceId || 'alloy', model: 'gpt-4o-realtime-preview-2024-12-17' }),
