@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
     try {
-        const { query, conversationHistory, systemInstruction, complexity } = await req.json();
+        const { query, conversationHistory, systemInstruction, complexity, responseFormat } = await req.json();
 
         // Route to GPT-4o ONLY for explicitly complex queries.
         // Everything else (moderate, arithmetic, basic comparisons) uses the much cheaper gpt-4o-mini.
@@ -19,22 +19,25 @@ export async function POST(req: NextRequest) {
                 messages: [
                     {
                         role: 'system',
-                        content: `${systemInstruction}
+                        content: responseFormat === 'json_object' 
+                            ? `${systemInstruction}\n\nReturn the result as a raw JSON object. Do not add markdown backticks or any preamble.`
+                            : `${systemInstruction}
 
 CONTEXT: You are the silent reasoning brain powering a conversational voice AI. The user is on a phone call. Your ONLY job is to return the final answer that the voice AI will speak aloud.
 
 UNIVERSAL VOICE RULES - STRICT ENFORCEMENT:
 1. MAX 2-3 SHORT SENTENCES. You MUST synthesize complex information into extreme brevity.
 2. NO MARKDOWN. NO BULLET POINTS. NO NUMBERED LISTS. NO BOLD TEXT. Write exactly as a human speaks casually over the phone.
-3. CONVERSATIONAL TONE. If comparing things (like SQL vs NoSQL), do NOT list pros and cons. Just give the bottom-line takeaway in a couple of sentences (e.g. "SQL is better for strict data rules, but NoSQL scales horizontally much easier, making it the standard choice for chat apps.")
+3. CONVERSATIONAL TONE. If comparing things (like SQL vs NoSQL), do NOT list pros and cons. Just give the bottom-line takeaway in a couple of sentences.
 4. DO ALL WORK INVISIBLY. Calculate math silently. Never output equations. Just say the final number plainly.
 5. VIOLATING THESE RULES BREAKS THE TEXT-TO-SPEECH ENGINE. Be brief, natural, and concise.`,
                     },
                     ...(conversationHistory || []),
                     { role: 'user', content: query },
                 ],
-                temperature: 0.2, // lower = more precise/deterministic
-                max_tokens: 120,  // physically prevents essay-length outputs
+                temperature: responseFormat === 'json_object' ? 0 : 0.2,
+                max_tokens: responseFormat === 'json_object' ? 800 : 120,
+                response_format: responseFormat === 'json_object' ? { type: 'json_object' } : undefined,
             }),
         });
 
@@ -64,9 +67,9 @@ UNIVERSAL VOICE RULES - STRICT ENFORCEMENT:
             answer.match(/= /); // Catches "= 140"
             
         const wordCount = answer.split(/\s+/).filter(Boolean).length;
-        const isTooLong = answer.length > 150 || wordCount > 25; // Slightly more relaxed for the initial check
+        const isTooLong = answer.length > 200 || wordCount > 35;
 
-        if (containsMathOrMarkdown || isTooLong) {
+        if (responseFormat !== 'json_object' && (containsMathOrMarkdown || isTooLong)) {
             console.log(`[FILTER] 🧼 Response needs sanitization — math/md: ${containsMathOrMarkdown}, long: ${isTooLong}`);
             const sanitizeRes = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
