@@ -103,6 +103,7 @@ type ObserverAnalysis = {
   is_off_topic: boolean;
   should_force_pivot: boolean;
   custom_correction_directive: string;
+  is_incomplete_answer: boolean;
 };
 
 // ─── Pricing (per 1M tokens) ──────────────────────────────────────────────────
@@ -138,6 +139,7 @@ CRITICAL RULES FOR ARIA (YOUR PERSONA):
 6. SINGLE QUESTION LIMIT: You MUST NEVER ask more than one question per response. 
 7. THE CLUTCH: If asked to verify specific details from the CV that you do not have in memory, seamlessly acknowledge it and ask a related high-level question. The system will silently inject the exact data for your next turn.
 8. PURE ENGLISH: You MUST only speak and interpret input in English. If the user speaks another language, politely ask them to switch to English for the interview.
+9. INTERRUPTION GUARD: If the candidate's last response feels mid-sentence, grammatically unfinished, or they were clearly interrupted by audio/latency, DO NOT move on. Politely ask them to finish ("I think you cut out there," or "You were saying...?") and wait.
 `;
 
 const PHASE_PERSONAS: Record<AppPhase, { title: string; goal: string; tone: string; rules: string }> = {
@@ -459,11 +461,13 @@ export default function AriaV4() {
   const usageRef = useRef<Usage>({
     rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0,
   });
+  const incompleteCountRef = useRef(0);
   const scoredTurnRef = useRef(-1);
   const lastScoredSummaryRef = useRef('');
 
   const skipNextScoreRef = useRef(false);
   const scoringQuestionRef = useRef('');
+  const pendingCvFollowupRef = useRef<{ project: string; question: string } | null>(null);
 
   // Sync data refs
   useEffect(() => { cvTextRef.current = cvText; }, [cvText]);
@@ -543,7 +547,25 @@ export default function AriaV4() {
     }
     setSilenceTimeLeft(null);
   }, []);
+  const endCall = useCallback(() => {
+    if (isEndingRef.current) return;
+    isEndingRef.current = true;
 
+    clearSilenceTimer();
+    if (greetingTimeoutRef.current) clearTimeout(greetingTimeoutRef.current);
+    if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+    pcRef.current?.close();
+    dcRef.current?.close();
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    pcRef.current = null; dcRef.current = null; streamRef.current = null;
+    if (audioElRef.current) audioElRef.current.srcObject = null;
+
+    setIsCallActive(false);
+    setIsCallEnded(true);
+    setCallStatus('Interview Ended');
+  }, [clearSilenceTimer]);
   const startSilenceTimer = useCallback((ms?: number) => {
     clearSilenceTimer();
     if (isEndingRef.current || phaseRef.current === 'report' || phaseRef.current === 'setup' || phaseRef.current === 'connecting' || phaseRef.current === 'closing') return;
@@ -554,29 +576,37 @@ export default function AriaV4() {
     setSilenceTimeLeft(timeout);
 
     silenceIntervalRef.current = setInterval(() => {
-      if (isAISpeakingRef.current) silenceStartTimeRef.current = Date.now();
+      // If AI is actively speaking audio, constantly reset the start time so the clock never ticks down.
+      if (isAISpeakingRef.current) {
+        silenceStartTimeRef.current = Date.now();
+      }
+
       const elapsed = Date.now() - silenceStartTimeRef.current;
       const remaining = Math.max(0, silenceDurationRef.current - elapsed);
       setSilenceTimeLeft(remaining);
-      if (remaining <= 0 && silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
+
+      // FIRE THE LOGIC HERE INSTEAD OF SETTIMEOUT
+      if (remaining <= 0) {
+        clearSilenceTimer(); // Stop the interval immediately
+
+        silencePromptCountRef.current++;
+        setSilenceStrikes(silencePromptCountRef.current);
+
+        if (silencePromptCountRef.current >= 3) {
+          const d_tid = addIntelLog('director', 'Max silence limit reached. Terminating.');
+          updateIntelLog(d_tid, 'error', 'Inactivity timeout ✓');
+          endCall();
+          return;
+        }
+        // FORCED RESPONSE ONLY FOR SILENCE
+        injectSystemMessage(`SYSTEM DIRECTIVE: The user has been completely silent (Strike ${silencePromptCountRef.current}/3). Politely ask if they are still there or need more time.`, true);
+        currentSilenceMsRef.current = SILENCE_BASE_MS;
+      }
     }, 100);
 
-    silenceTimerRef.current = setTimeout(() => {
-      silencePromptCountRef.current++;
-      setSilenceStrikes(silencePromptCountRef.current);
+    // Completely REMOVED the silenceTimerRef.current = setTimeout(...) block.
 
-      if (silencePromptCountRef.current >= 3) {
-        const d_tid = addIntelLog('director', 'Max silence limit reached. Terminating.');
-        updateIntelLog(d_tid, 'error', 'Inactivity timeout ✓');
-        endCall();
-        return;
-      }
-      // FORCED RESPONSE ONLY FOR SILENCE
-      injectSystemMessage(`SYSTEM DIRECTIVE: The user has been completely silent (Strike ${silencePromptCountRef.current}/3). Politely ask if they are still there or need more time.`, true);
-      currentSilenceMsRef.current = SILENCE_BASE_MS;
-      clearSilenceTimer();
-    }, timeout);
-  }, [clearSilenceTimer, injectSystemMessage]);
+  }, [clearSilenceTimer, injectSystemMessage, addIntelLog, updateIntelLog, endCall]);
 
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -627,25 +657,6 @@ ${GENERIC_RULES}
     });
   }, [sendRt, buildActorPrompt]);
 
-  const endCall = useCallback(() => {
-    if (isEndingRef.current) return;
-    isEndingRef.current = true;
-
-    clearSilenceTimer();
-    if (greetingTimeoutRef.current) clearTimeout(greetingTimeoutRef.current);
-    if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-
-    pcRef.current?.close();
-    dcRef.current?.close();
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    pcRef.current = null; dcRef.current = null; streamRef.current = null;
-    if (audioElRef.current) audioElRef.current.srcObject = null;
-
-    setIsCallActive(false);
-    setIsCallEnded(true);
-    setCallStatus('Interview Ended');
-  }, [clearSilenceTimer]);
 
   const startInterviewTimer = useCallback(() => {
     interviewStartTimeRef.current = Date.now();
@@ -703,6 +714,13 @@ ${GENERIC_RULES}
     const currentPhase = phaseRef.current;
     const tid = addIntelLog('observer', `[${currentPhase.toUpperCase()}] Observer scanning transcript...`);
 
+    // ── 0. Soft Follow-up Injection (Queued Context) ──
+    if (pendingCvFollowupRef.current) {
+      const { project, question } = pendingCvFollowupRef.current;
+      injectSystemMessage(`SYSTEM CONTEXT: CV mentions project "${project}". A good organic follow-up if appropriate for this turn: "${question}"`, false);
+      pendingCvFollowupRef.current = null; // Clear once injected
+    }
+
     try {
       const recentHistory = convHistoryRef.current.slice(-10).map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n');
       const topicElapsedSeconds = Math.floor((Date.now() - topicStartTimeRef.current) / 1000);
@@ -735,7 +753,8 @@ Task: Return JSON matching this schema exactly:
   "candidate_struggling": boolean,
   "red_flag_detected": "string",
   "requested_pause_seconds": number,
-  "custom_correction_directive": "string" // Universal command to fix Aria if she deviates (rambling, tone issues, technical loops, etc.).
+  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates (rambling, tone issues, technical loops, etc.).
+  "is_incomplete_answer": boolean // TRUE ONLY if candidate ends mid-thought or is cut off. FALSE if they say "move on", "nothing more", "just start", or give short/complete answers.
 }`;
       }
       // ── PHASE: WARMUP ──
@@ -760,7 +779,8 @@ Task: Return JSON matching this schema exactly:
   "candidate_struggling": boolean,
   "red_flag_detected": "string",
   "requested_pause_seconds": number,
-  "custom_correction_directive": "string" // Universal command to fix Aria if she deviates from the warmup goals.
+  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates from the warmup goals.
+  "is_incomplete_answer": boolean // TRUE ONLY if candidate ends mid-thought or is cut off. FALSE if they say "move on", "nothing more", "just start", or give short/complete answers.
 }`;
       }
       // ── PHASE: INTERVIEW ──
@@ -795,7 +815,8 @@ Task: Return JSON matching this schema exactly:
   "callback_opportunity": "string",
   "requested_pause_seconds": number,
   "is_complex_question": boolean,
-  "custom_correction_directive": "string" // Universal command to fix Aria if she deviates (e.g., technical loops, rambling, or tone issues).
+  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates (e.g., technical loops, rambling, or tone issues).
+  "is_incomplete_answer": boolean // TRUE if the candidate's last thought is unfinished/cut off.
 }`;
       }
       // ── PHASE: WRAPUP & CLOSING ──
@@ -812,13 +833,14 @@ Task: Return JSON matching this schema exactly:
   "is_filler_pause": boolean, 
   "candidate_has_final_question": boolean, 
   "candidate_ready_to_end": boolean, // TRUE ONLY IF candidate EXPLICITLY says they have "no more questions", "that's all", or "thanks". DO NOT set true just because they finished answering a question.
-  "should_end_call": boolean, // TRUE ONLY if BOTH sides have acknowledged goodbye.
+  "should_end_call": boolean, // TRUE if BOTH sides have acknowledged goodbye. During WRAPUP, set this only if the candidate is clearly done.
   "answer_summary": "string", 
   "is_off_topic": boolean, // FALSE if candidate is asking about the role, company, or feedback. ONLY TRUE if discussing completely unrelated personal topics.
   "should_force_pivot": boolean,
   "ai_rambling": boolean, 
   "ai_hallucination_or_tone_issue": "string",
-  "custom_correction_directive": "string" // Universal command to fix Aria if she deviates from the wrapup/closing goals.
+  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates from the wrapup/closing goals.
+  "is_incomplete_answer": boolean // TRUE if the candidate's last thought is unfinished/cut off.
 }`;
       }
 
@@ -847,12 +869,39 @@ Task: Return JSON matching this schema exactly:
         requested_pause_seconds: 0, is_complex_question: false, candidate_has_final_question: false,
         candidate_ready_to_end: false, should_end_call: false, is_off_topic: false, should_force_pivot: false,
         custom_correction_directive: '',
+        is_incomplete_answer: false,
         ...parsedJson
       };
 
       updateIntelLog(tid, 'done', 'Observer scan complete ✓');
       setLastObserverAnalysis(analysis);
       observerRunTurnRef.current = userTurnCountRef.current;
+
+      // ── 0. Cut-Off / Interruption Guard ──
+      if (analysis.is_incomplete_answer) {
+        incompleteCountRef.current++;
+        
+        if (incompleteCountRef.current < 3) {
+          // Aria (RT) handles this internally via Rule 9. We just sabotage scoring.
+          addIntelLog('director', `Incomplete answer detected (${incompleteCountRef.current}/3). Aria handling interruption.`);
+          
+          analysis.is_substantive_answer = false;
+          analysis.should_score_answer = false;
+          analysis.candidate_ready_to_end = false;
+          analysis.topic_exhausted = false;
+          
+          return; // Exit and wait for completion
+        } else {
+           // Strike 3. Force her to move on.
+           incompleteCountRef.current = 0;
+           const d_tid = addIntelLog('director', 'Interruption limit reached. Forcing progression.');
+           injectSystemMessage("SYSTEM DIRECTIVE: The candidate has been interrupted multiple times. Assume they're finished or can't continue. Smoothly shift to your next domain question or topic naturally. Forget the previous unfinished thought.", false);
+           updateIntelLog(d_tid, 'done', 'Force-progression injected ✓');
+        }
+      } else {
+        // Reset the counter if they give a normal answer
+        incompleteCountRef.current = 0;
+      }
 
       // ── 0. Dynamic Silence Timer ──
       if (analysis.requested_pause_seconds > 0) {
@@ -1010,7 +1059,9 @@ Task: Return JSON matching this schema exactly:
       }
 
       // Natural Termination Trigger
-      if (analysis.should_end_call) {
+      // GUARD: Only allow termination if we are in one of the final phases. 
+      // This prevents the timer-driven "Time is up" transition from accidentally closing the call immediately.
+      if (analysis.should_end_call && (phaseRef.current === 'wrapup' || phaseRef.current === 'closing')) {
         const d_tid = addIntelLog('director', 'Final goodbye detected. Preparing termination...');
         if (isAISpeakingRef.current) pendingEndRef.current = true; else endCall();
         updateIntelLog(d_tid, 'done', 'Intent: Natural Conclusion ✓');
@@ -1183,9 +1234,9 @@ Return JSON only:
       setIsCvAnalyzing(false);
       updateUsage();
 
-      let parsedScore = { 
-        score: 5, technical_accuracy: 5, logic_evaluation: '', missed_opportunities: [], 
-        question_summary: '', confidence: 'medium', grammar: 'average', clarity: 'average', depth: 'adequate' 
+      let parsedScore = {
+        score: 5, technical_accuracy: 5, logic_evaluation: '', missed_opportunities: [],
+        question_summary: '', confidence: 'medium', grammar: 'average', clarity: 'average', depth: 'adequate'
       };
       try { parsedScore = JSON.parse(scoreRaw.replace(/```json|```/g, '').trim()); } catch (e) { }
       let parsedFollowUp = { feedback: 'Answer recorded.', tags: [], suggested_followup: '' };
@@ -1220,7 +1271,7 @@ Return JSON only:
         if (finalScore <= 3) {
           newLevel = Math.max(1, newLevel - 1);
           // EXPLICIT Adaptive instruction - Stronger pivot for very low scores
-          const advice = finalScore <= 2 
+          const advice = finalScore <= 2
             ? "Candidate is significantly stuck. Acknowledge, offer a Tiny hint, and then pivot to a different technical area entirely."
             : `Candidate struggled. Lower difficulty to Level ${newLevel}. Ask a simpler, foundational question.`;
           injectSystemMessage(`SYSTEM DIRECTIVE: ${advice}`, false);
@@ -1245,7 +1296,8 @@ Return JSON only:
               topicInfo.questions.push(parsedCvDeepDive.cv_followup);
               setQueuedCvProjects(prev => [...new Set([...prev, parsedCvDeepDive.project_reference])]);
               addIntelLog('cv', `Queued CV Follow-up: "${parsedCvDeepDive.project_reference}" ✓`);
-              injectSystemMessage(`SYSTEM CONTEXT: CV mentions "${parsedCvDeepDive.project_reference}". A great organic follow-up for your NEXT turn: "${parsedCvDeepDive.cv_followup}"`, false);
+              // SOFT INJECTION: Queue it for the next runObserverPipeline run
+              pendingCvFollowupRef.current = { project: parsedCvDeepDive.project_reference, question: parsedCvDeepDive.cv_followup };
             }
           }
         }
@@ -1395,10 +1447,10 @@ Return JSON strictly matching:
       );
       let qs: string[] = [];
       try { qs = JSON.parse(raw.replace(/```json|```/g, '').trim()); } catch { }
-      if (qs.length >= 2) { 
+      if (qs.length >= 2) {
         // Force the 3rd question to be "Tell me about yourself"
-        warmupQueueRef.current = [...qs, "That's wonderful! Before we dive into the technical stuff, why don't you tell me a bit about yourself and your professional journey?"]; 
-        warmupQIndexRef.current = 0; 
+        warmupQueueRef.current = [...qs, "That's wonderful! Before we dive into the technical stuff, why don't you tell me a bit about yourself and your professional journey?"];
+        warmupQIndexRef.current = 0;
       }
     } catch { }
   };
@@ -1693,7 +1745,7 @@ Return JSON strictly matching:
           session: {
             instructions: `IMPORTANT: ONLY COMMUNICATE IN ENGLISH. \n\n` + buildActorPrompt('greeting'),
             input_audio_transcription: { model: 'whisper-1', language: 'en' },
-            turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 1500 },
+            turn_detection: { type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300, silence_duration_ms: 1500 },
             modalities: ['text', 'audio'],
             voice: 'shimmer',
             tools: [], tool_choice: 'none',
@@ -1985,32 +2037,32 @@ Return JSON strictly matching:
 
           <div className="card">
             <div className="card-label">Evaluation Context (JD)</div>
-            
+
             <div className="tab-row">
               <button className={`tab-btn ${jdTab === 'manual' ? 'on' : ''}`} onClick={() => setJdTab('manual')}>Manual Input</button>
               <button className={`tab-btn ${jdTab === 'templates' ? 'on' : ''}`} onClick={() => setJdTab('templates')}>Role Templates</button>
             </div>
 
             {jdTab === 'manual' ? (
-              <textarea 
-                className="textarea fade" 
-                placeholder="Paste professional Job Description here..." 
-                style={{ minHeight: 220 }} 
-                value={jdText} 
-                onChange={e => setJdText(e.target.value)} 
+              <textarea
+                className="textarea fade"
+                placeholder="Paste professional Job Description here..."
+                style={{ minHeight: 220 }}
+                value={jdText}
+                onChange={e => setJdText(e.target.value)}
               />
             ) : (
               <div className="template-grid fade">
                 {Object.entries(JD_TEMPLATES).map(([key, value]) => {
                   const icons: any = { frontend: '⚛️', backend: '⚙️', fullstack: '⚡', ai: '🧠', devops: '☁️', mobile: '📱', qa: '🧪' };
-                  const names: any = { 
+                  const names: any = {
                     frontend: 'Frontend Expert', backend: 'Backend Architect', fullstack: 'Fullstack Lead',
                     ai: 'AI/ML Specialist', devops: 'DevOps/SRE', mobile: 'Mobile Architect', qa: 'QA Automation'
                   };
                   const isSelected = jdText === value;
                   return (
-                    <div 
-                      key={key} 
+                    <div
+                      key={key}
                       className={`template-card ${isSelected ? 'on' : ''}`}
                       onClick={() => { setJdText(value); setJdTab('manual'); }}
                     >
@@ -2108,77 +2160,77 @@ Return JSON strictly matching:
         <div className="noise" />
         <div className="report-wrap">
           <div className="report fade">
-          <div className="report-hero">
-            <div className="report-title">Interview Report</div>
-            {avgScore > 0 && <div className="report-avg" style={{ color: scoreColor(avgScore) }}>{avgScore.toFixed(1)}</div>}
-          </div>
-          <div className="report-stats">
-            <div className="rstat"><div className="rstat-val">{scores.length}</div><div className="rstat-lbl">Answers</div></div>
-            <div className="rstat"><div className="rstat-val">${computeVoiceCost(usage).toFixed(4)}</div><div className="rstat-lbl">Voice Engine</div></div>
-            <div className="rstat"><div className="rstat-val">${computeIntelCost(usage).toFixed(4)}</div><div className="rstat-lbl">Intelligence</div></div>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderBottom: '1px solid var(--line)', background: 'var(--bg3)' }}>
-            <div style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)' }}>ESTIMATED TOTAL SESSION COST:</div>
-            <div style={{ fontSize: 11, color: 'var(--blue)', fontWeight: 700, fontFamily: 'var(--mono)' }}>${totalCost.toFixed(5)}</div>
-          </div>
-          {scores.length > 0 && (
-            <div className="answers-section">
-              {scores.map((s, i) => (
-                <div className="answer-item" key={i}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text1)' }}>
-                    {s.questionSummary || s.question}
-                  </div>
-                  {s.questionSummary && <div style={{ fontSize: 9, color: 'var(--text3)', marginTop: -2 }}>Full: {s.question}</div>}
-                  
-                  <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
-                    <ScoreBadge score={s.score} />
-                    {s.depth && <DepthBadge level={s.depth} />}
-                    {s.technicalAccuracy && (
-                      <span className="metric-pill" style={{ background: 'var(--amber)11', color: 'var(--amber)' }}>
-                        Accuracy: {s.technicalAccuracy}/10
-                      </span>
-                    )}
-                  </div>
-
-                  <div style={{ fontSize: 11, color: 'var(--text2)', borderLeft: '2px solid var(--line)', paddingLeft: 8, margin: '6px 0' }}>
-                    {s.answerSummary}
-                  </div>
-
-                  {s.logicEvaluation && (
-                    <div style={{ fontSize: 10, color: 'var(--text3)' }}>
-                      <strong>Logic:</strong> {s.logicEvaluation}
-                    </div>
-                  )}
-
-                  {s.missedOpportunities && s.missedOpportunities.length > 0 && (
-                    <div style={{ marginTop: 6, padding: '6px 10px', background: 'var(--bg3)', borderRadius: 6 }}>
-                      <div style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 800, marginBottom: 4, letterSpacing: '.05em' }}>KEY OMISSIONS / TIPS</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-                        {s.missedOpportunities.map((opt, idx) => (
-                          <div key={idx} style={{ fontSize: 9, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span style={{ color: 'var(--amber)' }}>•</span> {opt}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-                    {s.confidence && <span className="metric-pill">Conf: {s.confidence}</span>}
-                    {s.grammar && <span className="metric-pill">Grammar: {s.grammar}</span>}
-                    {s.clarity && <span className="metric-pill">Clarity: {s.clarity}</span>}
-                    {s.depthStr && <span className="metric-pill">Depth: {s.depthStr}</span>}
-                  </div>
-                </div>
-              ))}
+            <div className="report-hero">
+              <div className="report-title">Interview Report</div>
+              {avgScore > 0 && <div className="report-avg" style={{ color: scoreColor(avgScore) }}>{avgScore.toFixed(1)}</div>}
             </div>
-          )}
-          <div style={{ padding: 20, textAlign: 'center' }}>
-            <button className="restart-btn" onClick={() => window.location.reload()}>Restart</button>
+            <div className="report-stats">
+              <div className="rstat"><div className="rstat-val">{scores.length}</div><div className="rstat-lbl">Answers</div></div>
+              <div className="rstat"><div className="rstat-val">${computeVoiceCost(usage).toFixed(4)}</div><div className="rstat-lbl">Voice Engine</div></div>
+              <div className="rstat"><div className="rstat-val">${computeIntelCost(usage).toFixed(4)}</div><div className="rstat-lbl">Intelligence</div></div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderBottom: '1px solid var(--line)', background: 'var(--bg3)' }}>
+              <div style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)' }}>ESTIMATED TOTAL SESSION COST:</div>
+              <div style={{ fontSize: 11, color: 'var(--blue)', fontWeight: 700, fontFamily: 'var(--mono)' }}>${totalCost.toFixed(5)}</div>
+            </div>
+            {scores.length > 0 && (
+              <div className="answers-section">
+                {scores.map((s, i) => (
+                  <div className="answer-item" key={i}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text1)' }}>
+                      {s.questionSummary || s.question}
+                    </div>
+                    {s.questionSummary && <div style={{ fontSize: 9, color: 'var(--text3)', marginTop: -2 }}>Full: {s.question}</div>}
+
+                    <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
+                      <ScoreBadge score={s.score} />
+                      {s.depth && <DepthBadge level={s.depth} />}
+                      {s.technicalAccuracy && (
+                        <span className="metric-pill" style={{ background: 'var(--amber)11', color: 'var(--amber)' }}>
+                          Accuracy: {s.technicalAccuracy}/10
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ fontSize: 11, color: 'var(--text2)', borderLeft: '2px solid var(--line)', paddingLeft: 8, margin: '6px 0' }}>
+                      {s.answerSummary}
+                    </div>
+
+                    {s.logicEvaluation && (
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>
+                        <strong>Logic:</strong> {s.logicEvaluation}
+                      </div>
+                    )}
+
+                    {s.missedOpportunities && s.missedOpportunities.length > 0 && (
+                      <div style={{ marginTop: 6, padding: '6px 10px', background: 'var(--bg3)', borderRadius: 6 }}>
+                        <div style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 800, marginBottom: 4, letterSpacing: '.05em' }}>KEY OMISSIONS / TIPS</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                          {s.missedOpportunities.map((opt, idx) => (
+                            <div key={idx} style={{ fontSize: 9, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span style={{ color: 'var(--amber)' }}>•</span> {opt}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                      {s.confidence && <span className="metric-pill">Conf: {s.confidence}</span>}
+                      {s.grammar && <span className="metric-pill">Grammar: {s.grammar}</span>}
+                      {s.clarity && <span className="metric-pill">Clarity: {s.clarity}</span>}
+                      {s.depthStr && <span className="metric-pill">Depth: {s.depthStr}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ padding: 20, textAlign: 'center' }}>
+              <button className="restart-btn" onClick={() => window.location.reload()}>Restart</button>
+            </div>
           </div>
         </div>
-      </div>
-    </>
+      </>
     );
   }
 
