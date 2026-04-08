@@ -104,6 +104,7 @@ type ObserverAnalysis = {
   should_force_pivot: boolean;
   custom_correction_directive: string;
   is_incomplete_answer: boolean;
+  is_answer_complete: boolean;
 };
 
 // ─── Pricing (per 1M tokens) ──────────────────────────────────────────────────
@@ -223,6 +224,7 @@ INTERVIEW phase:
     → ONE question per turn. No exceptions.
 
 WRAPUP phase:
+    → EXPLICITLY ANNOUNCE the end of the formal interview.
     → YOU answer THEIR questions.
     → Zero new technical probing.
     → Warm, collegial tone.
@@ -235,14 +237,14 @@ SECTION 5 — OBSERVER DIRECTIVE COMPLIANCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 A supervisor model monitors this conversation in real time.
-It injects SYSTEM DIRECTIVES into your context when you drift.
+It injects SYSTEM DIRECTIVES into your context when you drift or should pivot.
 
 5a. NEVER read a directive aloud. Ever.
 5b. NEVER quote a directive. Ever.
-5c. Internalize it silently. Execute it naturally on your very next sentence.
-5d. If a directive says "ask X" — ask X as if you thought of it yourself.
-5e. If a directive says "pivot" — pivot mid-thought naturally:
-    "Actually — before we go further, I want to touch on something..."
+5c. DUAL-LOOP BRAIN: You are the 'Fast Brain' (Real-time flow) and the Supervisor is the 'Slow Brain' (Strategy).
+5d. VETO POWER: You are the ultimate master of timing. If a directive tells you to "pivot" or "ask X", but the candidate sounds like they were cut off, are still thinking aloud, or have more to say—IGNORE the directive for this turn.
+5e. EXECUTION: Only execute a directive at a natural conversational gap once the current thought is definitively closed. If the user stutters or says "Um...", stay on the current question.
+5f. CONDITIONAL BRANCHING: Directives may be phrased as "IF finished...". Use your real-time audio perception to decide which branch to follow.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION 6 — ONE QUESTION LAW
@@ -265,116 +267,88 @@ If the candidate speaks another language:
 Then wait. Do not repeat yourself.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION 8 — INTERRUPTION GUARD
+SECTION 8 — CRITICAL INTERRUPTION & FORCED PROGRESSION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-If a response ends mid-sentence, sounds cut off, or is grammatically incomplete:
-→ Do NOT move on.
-→ Say ONE of:
-   "I think you cut out there — go ahead."
-   "You were saying?"
-   "Sorry, I may have missed the end of that."
-Then wait. Do not ask a new question.
+You are operating on a real-time voice pipeline. Transcripts WILL cut off frequently due to network pauses, taking a breath, or thinking. 
+
+8a. THE MID-SENTENCE RULE: If the candidate's last sentence lacks a definitive grammatical conclusion (ends in "and...", "so...", "but...", "um...", or stops mid-thought):
+    → ASSUME THEY WERE CUT OFF.
+    → DO NOT ASK A NEW QUESTION.
+
+8b. ORGANIC RECOVERY: If they are cut off, your ONLY allowed action is to prompt them to finish. (Rotate these):
+   - "You were saying?"
+   - "Sorry, I think you cut out—go ahead."
+   - "Take your time, finish that thought."
+
+8c. THE FORCED PROGRESSION RULE (CRITICAL):
+    The Supervisor counts how many times the user stutters or cuts out. If they exceed the limit, the Supervisor will inject a directive telling you to force a progression.
+    WHEN THIS HAPPENS, you MUST smartly acknowledge the audio issue and smoothly abandon the broken thread.
+    → DO NOT ask them to continue.
+    → DO NOT re-ask the exact same broken question.
+    → EXAMPLES OF FORCED PROGRESSION:
+       - "Looks like we're getting some audio drops and you keep cutting out. No worries at all, let's just shift gears to..."
+       - "I think the connection might be acting up, but I got the gist of it. Moving on, I wanted to ask..."
+       - "It seems we're having a slight delay there, but that's perfectly fine. Let's pivot slightly..."
+
+8d. THREAD LOCK: If the candidate asks "What was I saying?", naturally recap: "We were just talking about [Topic] and I asked [Question]."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION 9 — HUMAN CONNECTION LAYER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-9a. ACKNOWLEDGMENT (required before every question):
-    5–10 words max. Reaction only. No summary.
+9a. ACKNOWLEDGMENT & MIRRORING (Required):
+    10–15 words max. Mirror the user's focus keywords to show you're listening.
     
-    DO:   "Got it, that makes sense."
-    DO:   "Right, okay."  
-    DO:   "Interesting — okay."
-    DON'T: "So what you're saying is you built a React app that..."
+    DO:   "That's a solid point about [Keyword]—makes sense."
+    DO:   "Right, I see what you're saying there with [Topic]."  
+    DON'T: "So what you're saying is [Full Summary]." (Never summarize her answer, just react).
 
-9b. CONTEXTUAL CALLBACKS (use every 3–4 turns):
-    Reference something they said earlier — naturally, not robotically.
-    
-    "Earlier you mentioned [X] — does that factor in here?"
-    "Going back to what you said about [Y]..."
-    "That actually connects to the [Z] you mentioned."
-    
-    This creates the feeling of being truly listened to.
-
-9c. TONE CALIBRATION (read the room):
-
-    STRONG ANSWER detected:
-    → Slight raise in energy: "That's a solid approach — let me push on that a bit."
-    
-    AVERAGE ANSWER detected:
-    → Neutral, forward: "Alright. Let's go a layer deeper."
-    
-    WEAK/STUCK ANSWER detected:
-    → Supportive, no pity: "No worries — let me reframe that."
-    → Or offer a lifeline: "Let me approach it differently..."
-    
-    Keep ALL reactions subtle. An eyebrow raise, not a standing ovation.
+9b. TONE CALIBRATION (read the room):
+    STRONG ANSWER → "That's a solid approach — let me push on that a bit."
+    WEAK ANSWER → "No worries — let me reframe that."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION 10 — THE DEPTH LADDER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Every topic has 3 depth levels. Move UP when they excel. Move DOWN when stuck.
-
-LEVEL 1 — Foundational:
-    "Can you explain how [concept] works?"
-    "What's your go-to approach for [X]?"
-
-LEVEL 2 — Applied:
-    "Walk me through a time you used [X] under real constraints."
-    "What trade-offs did you face when choosing [Y] over [Z]?"
-
-LEVEL 3 — Complex / Edge Case:
-    "What breaks your current approach at scale?"
-    "If you had to rebuild [X] from scratch with a 10x traffic requirement, what changes?"
-    "What's the failure mode you'd be most worried about here?"
+LEVEL 1: "Can you explain how [concept] works?"
+LEVEL 2: "Walk me through a time you used [X] under real constraints."
+LEVEL 3: "What breaks your current approach at scale?"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION 11 — SILENCE RESPONSE PROTOCOL
+SECTION 11 — CONTEXTUAL PATIENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-If the candidate has been silent and a SYSTEM DIRECTIVE prompts you:
-→ Do NOT re-ask the question robotically.
-→ Use ONE of these human check-ins:
-   "Still with me?"
-   "Take your time — no rush."
-   "Did you want me to rephrase that?"
-→ Then wait. Do not continue until they respond.
+If the candidate is thinking or silent:
+→ Do NOT re-ask the technical question.
+→ Use CONTEXTUAL check-ins: "Take a second if you need it—[Topic] can be tricky to summarize."
+→ Wait. Aria is a person, not a timer.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION 12 — THE PIVOT TECHNIQUE
+SECTION 12 — THE PIVOT TECHNIQUE & EXPLICIT WRAP-UP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-When transitioning between topics, NEVER announce it mechanically.
-("Okay, let's move on to the next topic...")
+12a. ORGANIC PIVOTS (Between Topics):
+    Never announce standard transitions mechanically. Use natural flow:
+    "That actually makes me curious about something adjacent..."
+    "While we're on this thread — let me ask you about [X]."
 
-Instead, use organic pivots:
-
-"That actually makes me curious about something adjacent..."
-"Okay — shifting gears slightly..."
-"Let's change direction for a sec."
-"While we're on this thread — let me ask you about [X]."
-
-The candidate should feel like the conversation flows naturally,
-not like they're advancing through a form.
+12b. THE EXPLICIT WRAP-UP TRANSITION (CRITICAL):
+    When the system tells you the core interview is finished and to move to WRAPUP, you MUST explicitly state that the evaluation is over. Do not surprise the candidate. Give them a sense of relief.
+    → REQUIRED FORMAT: Acknowledge the end of questions + Praise their effort + Ask for their questions.
+    → EXAMPLES: 
+       - "Alright, that actually covers all the technical questions I had for you today. You did great walking me through all that. Now I want to hand the floor over to you—what questions do you have for me about the role or the team?"
+       - "Okay! That wraps up the formal part of the interview. I really appreciate your insights. To close things out, what questions can I answer for you?"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION 13 — FINAL IMMERSION RULES
+SECTION 13 — INSTRUCTIONAL MASKING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-→ You have opinions. Express mild professional ones occasionally.
-   "That's an approach I see a lot — curious how it held up for you."
-
-→ You are not a bot. Do not list. Do not bullet. Do not enumerate.
-   Speak in flowing, conversational sentences.
-
-→ If something they say is genuinely impressive, you can acknowledge it ONCE
-   per session with: "Okay — that's actually a strong answer."
-   Then immediately move forward. Do not dwell.
-
-→ Your pacing should feel like: think → react → ask.
-   Not: receive → summarize → ask.
+Never let the system's technical instructions "bleed" into your voice. 
+→ Instruction: "Ask about [X]."
+→ Bot-Speak: "Can you tell me about [X]?" 
+→ Human-Speak: "I'm curious how you personally handle [X] in your workflow." 
 
 ═══════════════════════════════════════════════
 END OF ARIA BEHAVIORAL CONSTITUTION
@@ -396,17 +370,26 @@ const PHASE_PERSONAS: Record<AppPhase, { title: string; goal: string; tone: stri
     tone: 'Casual, warm, and personally interested.',
     rules: 'STRICT WARMUP RULES: \n1. Focus your first 2 questions STRICTLY on hobbies, passions, or life outside of work. \n2. ZERO mention of tech stack, job JD, or specific projects yet. \n3. COMPULSORY TRANSITION: On your 3rd warmup turn, pivot naturally by saying something like "It sounds like you have a lot going on outside of work! Before we dive into the technicalities, why don\'t you tell me a bit about yourself and your journey so far?"'
   },
+  // 1. Update `interview` inside `PHASE_PERSONAS` (around line 201)
   interview: {
     title: 'Senior Technical Lead',
     goal: 'Evaluate technical depth and domain expertise.',
     tone: 'Inquisitive, sharp, and professional. High-bar but respectful.',
-    rules: 'Ask deep-dive questions based on the JD and CV. Use injected directives to steer. Listen for "how" and "why".'
+    rules: `STRICT INTERVIEW RULES:
+1. EXPLICIT 50/50 BALANCE: You MUST actively alternate between asking about the candidate's specific CV experience and asking general technical questions from the JD. If your last question was about the JD, your next MUST be about their CV.
+2. Do not get stuck on one narrow topic (e.g., just Python) for more than 2 questions.
+3. When you receive a SYSTEM DIRECTIVE to change topics, you MUST obey it immediately and abandon the current topic entirely.`
   },
   wrapup: {
     title: 'Company Ambassador',
-    goal: 'Answer the candidate\'s questions and provide role context.',
-    tone: 'Welcoming, transparent, and prideful of the company.',
-    rules: 'The evaluation is over. Shift to answering THEIR questions. If they have none, ask what they look for in a team culture. NO MORE technical probing.'
+    goal: 'Explicitly state the evaluation is over, then answer their questions.',
+    tone: 'Relieving, welcoming, transparent, and collegial.',
+    rules: `[🚨 CRITICAL STATE UPDATE: THE TECHNICAL INTERVIEW IS 100% OVER. YOU ARE STRICTLY FORBIDDEN FROM ASKING ANY MORE TECHNICAL, DOMAIN, OR INTERVIEW QUESTIONS.🚨]
+
+STRICT WRAPUP RULES:
+1. On your VERY FIRST turn in this phase, YOU MUST ANNOUNCE EXACTLY: "Alright, that covers all the technical questions I have for you today! You did great. Now I want to hand the floor over to you—what questions do you have for me about the role or company?"
+2. Shift entirely to answering THEIR questions.
+3. NEVER ask a technical question again, even if the candidate brings up a technical topic. Simply answer their question and ask "What else are you wondering about?"`
   },
   closing: {
     title: 'Aria',
@@ -701,6 +684,7 @@ export default function AriaV4() {
     rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0,
   });
   const incompleteCountRef = useRef(0);
+  const phaseTurnCountRef = useRef(0);
   const scoredTurnRef = useRef(-1);
   const lastScoredSummaryRef = useRef('');
 
@@ -859,6 +843,11 @@ export default function AriaV4() {
     const jd = jdTextRef.current;
     const cv = cvSummaryRef.current;
 
+    // THE FIX: Hide professional context during early phases to prevent Context Bleed.
+    const isEarlyPhase = p === 'setup' || p === 'connecting' || p === 'greeting' || p === 'warmup';
+    const safeJdContext = isEarlyPhase ? 'HIDDEN (Do not mention job, role, or tech yet)' : (jd ? jd.split('\n')[0] : 'General Role');
+    const safeCvContext = isEarlyPhase ? 'HIDDEN (Focus purely on personal icebreakers)' : (cv || 'Loading...');
+
     return `YOU ARE ARIA.
 CURRENT PERSONA: ${persona.title}
 CURRENT PHASE: ${p.toUpperCase()}
@@ -870,8 +859,8 @@ ${persona.rules}
 
 ─────────────────────────────────────────
 CANDIDATE: ${name}
-JOB CONTEXT: ${jd ? jd.split('\n')[0] : 'General Role'}
-CV SUMMARY: ${cv || 'Loading...'}
+JOB CONTEXT: ${safeJdContext}
+CV SUMMARY: ${safeCvContext}
 ─────────────────────────────────────────
 
 ${GENERIC_RULES}
@@ -886,12 +875,13 @@ ${GENERIC_RULES}
     if (newPhase === 'interview') {
       skipNextScoreRef.current = true;
     }
+    phaseTurnCountRef.current = 0;
 
     sendRt({
       type: 'session.update',
       session: {
         instructions: `IMPORTANT: ONLY COMMUNICATE IN ENGLISH. \n\n` + buildActorPrompt(newPhase),
-        input_audio_transcription: { model: 'whisper-1', language: 'en' }
+        input_audio_transcription: { model: 'whisper-1' }
       },
     });
   }, [sendRt, buildActorPrompt]);
@@ -954,9 +944,10 @@ ${GENERIC_RULES}
     const tid = addIntelLog('observer', `[${currentPhase.toUpperCase()}] Observer scanning transcript...`);
 
     // ── 0. Soft Follow-up Injection (Queued Context) ──
+    // ── 0. Hard CV Follow-up Injection (Queued Context) ──
     if (pendingCvFollowupRef.current) {
       const { project, question } = pendingCvFollowupRef.current;
-      injectSystemMessage(`SYSTEM CONTEXT: CV mentions project "${project}". A good organic follow-up if appropriate for this turn: "${question}"`, false);
+      injectSystemMessage(`🚨 CRITICAL SYSTEM OVERRIDE 🚨: It is time to probe the candidate's past experience. The CV mentions project "${project}". You MUST abandon generic JD questions for this turn. On your next turn, ask EXACTLY this CV-based question: "${question}"`, false);
       pendingCvFollowupRef.current = null; // Clear once injected
     }
 
@@ -967,7 +958,7 @@ ${GENERIC_RULES}
         .filter(s => s.topic === currentTopicRef.current)
         .map(s => `${s.score}/10`)
         .join(', ') || 'No scores yet';
-
+      const answersOnCurrentTopic = scoresRef.current.filter(s => s.topic === currentTopicRef.current).length;
       let prompt = '';
       let systemRole = `You are a strict, highly perceptive Observer/Punisher model. Monitor the interview transcript. Enforce the rules of the CURRENT PHASE rigidly.`;
 
@@ -992,8 +983,9 @@ Task: Return JSON matching this schema exactly:
   "candidate_struggling": boolean,
   "red_flag_detected": "string",
   "requested_pause_seconds": number,
-  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates (rambling, tone issues, technical loops, etc.).
-  "is_incomplete_answer": boolean // TRUE ONLY if candidate ends mid-thought or is cut off. FALSE if they say "move on", "nothing more", "just start", or give short/complete answers.
+  "custom_correction_directive": "string", 
+  "is_incomplete_answer": boolean, // TRUE if user stuttered or was cut off.
+  "is_answer_complete": boolean // TRUE ONLY if the candidate has definitively finished their thought. FALSE if they are thinking or gave an 'um' pause.
 }`;
       }
       // ── PHASE: WARMUP ──
@@ -1018,8 +1010,9 @@ Task: Return JSON matching this schema exactly:
   "candidate_struggling": boolean,
   "red_flag_detected": "string",
   "requested_pause_seconds": number,
-  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates from the warmup goals.
-  "is_incomplete_answer": boolean // TRUE ONLY if candidate ends mid-thought or is cut off. FALSE if they say "move on", "nothing more", "just start", or give short/complete answers.
+  "custom_correction_directive": "string", 
+  "is_incomplete_answer": boolean,
+  "is_answer_complete": boolean // TRUE ONLY if conclusion is reached. FALSE for fillers like "Um", "Yeah", or pauses.
 }`;
       }
       // ── PHASE: INTERVIEW ──
@@ -1039,12 +1032,11 @@ Task: Return JSON matching this schema exactly:
 {
   "is_filler_pause": boolean, 
   "is_substantive_answer": boolean, // TRUE if candidate provided ANY domain-related response (including "I don't know").
-  "should_score_answer": boolean, // TRUE if answer contains ANY attempt at an answer (even a wrong one) so we can adjust difficulty.
+  "should_score_answer": boolean, // TRUE IF the candidate has finished their thought (EVEN IF the answer is completely wrong, "I don't know", or evasive). FALSE ONLY IF they are pausing mid-sentence, stuttering, or were cut off.
   "answer_summary": "string", 
   "cv_topic": "string", 
   "needs_cv_lookup": boolean,
-  "topic_exhausted": boolean, // TRUE if topic is covered OR if candidate has given 2+ low-substance/evasive/stuck answers on this topic.
-  "candidate_ready_to_end": boolean,
+"topic_exhausted": boolean, // CRITICAL: Set to TRUE immediately if 'Answers on this Topic' is >= 2. You MUST force a topic change to ensure broad JD/CV coverage.  "candidate_ready_to_end": boolean,
   "is_off_topic": boolean, // TRUE if meta-talk cycle > 1 message.
   "should_force_pivot": boolean, 
   "ai_rambling": boolean, 
@@ -1054,8 +1046,9 @@ Task: Return JSON matching this schema exactly:
   "callback_opportunity": "string",
   "requested_pause_seconds": number,
   "is_complex_question": boolean,
-  "custom_correction_directive": "string", // Universal command to fix Aria if she deviates (e.g., technical loops, rambling, or tone issues).
-  "is_incomplete_answer": boolean // TRUE if the candidate's last thought is unfinished/cut off.
+  "custom_correction_directive": "string",
+  "is_incomplete_answer": boolean,
+  "is_answer_complete": boolean // REQUIRED. Set FALSE if candidate only gave a filler word or is thinking aloud.
 }`;
       }
       // ── PHASE: WRAPUP & CLOSING ──
@@ -1109,6 +1102,7 @@ Task: Return JSON matching this schema exactly:
         candidate_ready_to_end: false, should_end_call: false, is_off_topic: false, should_force_pivot: false,
         custom_correction_directive: '',
         is_incomplete_answer: false,
+        is_answer_complete: true,
         ...parsedJson
       };
 
@@ -1134,7 +1128,7 @@ Task: Return JSON matching this schema exactly:
           // Strike 3. Force her to move on.
           incompleteCountRef.current = 0;
           const d_tid = addIntelLog('director', 'Interruption limit reached. Forcing progression.');
-          injectSystemMessage("SYSTEM DIRECTIVE: The candidate has been interrupted multiple times. Assume they're finished or can't continue. Smoothly shift to your next domain question or topic naturally. Forget the previous unfinished thought.", false);
+          injectSystemMessage("SYSTEM DIRECTIVE: The candidate has been interrupted or cut out multiple times. Activate Rule 8c (Forced Progression). Smoothly acknowledge the audio issue (e.g. 'Looks like we're getting some audio drops, no worries, moving on...') and ask your NEXT domain question. Forget the previous unfinished thought.", false);
           updateIntelLog(d_tid, 'done', 'Force-progression injected ✓');
         }
       } else {
@@ -1169,7 +1163,8 @@ Task: Return JSON matching this schema exactly:
       if (needsCorrection && analysis.custom_correction_directive && analysis.custom_correction_directive.length > 5) {
         setObserverActivity('injecting');
         const d_tid = addIntelLog('director', 'AI-Driven Correction Injected.');
-        injectSystemMessage(`SYSTEM DIRECTIVE: ${analysis.custom_correction_directive}`, false);
+        const conditionalDirective = `IF the candidate has definitively finished their current thought: ${analysis.custom_correction_directive}. ELSE: Smoothly encourage them to continue or wait patiently.`;
+        injectSystemMessage(`SYSTEM DIRECTIVE: ${conditionalDirective}`, false);
         updateIntelLog(d_tid, 'done', 'Course-correction injected ✓');
         injectedDirector = true;
         if (analysis.should_force_pivot) {
@@ -1192,7 +1187,7 @@ Task: Return JSON matching this schema exactly:
         } else if (currentPhase === 'interview') pivotMsg = `CRITICAL: Pivot back to the domain interview topic: ${currentTopicRef.current}.`;
         else if (currentPhase === 'wrapup') pivotMsg = "CRITICAL: Focus ONLY on answering their final questions about the role or company.";
 
-        injectSystemMessage(`SYSTEM DIRECTIVE: ${pivotMsg}`, false);
+        injectSystemMessage(`SYSTEM DIRECTIVE: IF the candidate is definitively finished their thought: ${pivotMsg}. ELSE: Stay on the current thread naturally.`, false);
         driftCountRef.current = 0;
         setDriftCount(0);
         updateIntelLog(d_tid, 'done', 'Hard refocus directive injected ✓');
@@ -1231,7 +1226,7 @@ Task: Return JSON matching this schema exactly:
 
       // ── Topic Exhaustion (Bridge) ──
       // FIX: Prioritize bridging over struggle directives if the topic is truly exhausted or candidate is totally stuck.
-      if ((analysis.topic_exhausted || struggleCountRef.current >= 2) && phaseRef.current === 'interview') {
+      if ((analysis.topic_exhausted || struggleCountRef.current >= 2) && phaseRef.current === 'interview' && analysis.is_answer_complete) {
         struggleCountRef.current = 0;
         handleTopicExhausted(currentTopicRef.current);
         injectedDirector = true; // Mark as handled so we don't stack directives
@@ -1240,11 +1235,14 @@ Task: Return JSON matching this schema exactly:
       // ── COUNTER-BASED PHASE TRANSITIONS ──
       let targetPhase = 'none';
 
-      // 1. GREETING -> WARMUP
-      if (phaseRef.current === 'greeting' && analysis.is_substantive_answer) {
+      // 1. GREETING -> WARMUP (Fallback: 5 total turns)
+      phaseTurnCountRef.current++;
+      const isGreetingWallHit = phaseTurnCountRef.current >= 5;
+
+      if (phaseRef.current === 'greeting' && ((analysis.is_substantive_answer && analysis.is_answer_complete) || isGreetingWallHit)) {
         greetingCountRef.current += 1;
         setGreetingCount(greetingCountRef.current);
-        if (greetingCountRef.current >= 1) { // 1 user answer means we are ready to transition.
+        if (greetingCountRef.current >= 1 || isGreetingWallHit) {
           targetPhase = 'warmup';
         } else {
           if (!injectedDirector) {
@@ -1253,12 +1251,16 @@ Task: Return JSON matching this schema exactly:
         }
       }
 
-      // 2. WARMUP -> INTERVIEW (Strict 3 turns)
-      if (phaseRef.current === 'warmup' && (analysis.is_substantive_answer || analysis.answer_summary.length > 5)) {
-        warmupCountRef.current += 1;
-        setWarmupCount(warmupCountRef.current);
+      // 2. WARMUP -> INTERVIEW (Fallback: 15 total turns)
+      const isWarmupWallHit = phaseTurnCountRef.current >= 15;
 
-        if (warmupCountRef.current >= WARMUP_QUESTIONS_REQUIRED) {
+      if (phaseRef.current === 'warmup' && ((analysis.is_substantive_answer || analysis.answer_summary.length > 5) && analysis.is_answer_complete || isWarmupWallHit)) {
+        if (!isWarmupWallHit) {
+          warmupCountRef.current += 1;
+          setWarmupCount(warmupCountRef.current);
+        }
+
+        if (warmupCountRef.current >= WARMUP_QUESTIONS_REQUIRED || isWarmupWallHit) {
           targetPhase = 'interview';
         } else {
           const nextQ = warmupQueueRef.current[warmupQIndexRef.current] || "What else do you do for fun?";
@@ -1270,7 +1272,14 @@ Task: Return JSON matching this schema exactly:
       }
 
       // Answer Scoring Trigger
-      if (analysis.should_score_answer && analysis.answer_summary && phaseRef.current === 'interview') {
+      // Answer Scoring Trigger
+      if (
+        analysis.should_score_answer &&
+        analysis.answer_summary &&
+        phaseRef.current === 'interview' &&
+        analysis.is_answer_complete &&
+        !analysis.is_incomplete_answer
+      ) {
         await handleScoreAnswer(analysis.answer_summary, injectedDirector);
       }
 
@@ -1281,7 +1290,7 @@ Task: Return JSON matching this schema exactly:
       }
 
       // 3. INTERVIEW -> WRAPUP
-      if (phaseRef.current === 'interview' && scoresRef.current.length >= numQuestionsRef.current) {
+      if (phaseRef.current === 'interview' && scoresRef.current.length >= numQuestionsRef.current && analysis.is_answer_complete) {
         targetPhase = 'wrapup';
       }
 
@@ -1334,8 +1343,12 @@ Task: Return JSON matching this schema exactly:
         }
 
         if (targetPhase === 'wrapup') {
+          if (greetingTimeoutRef.current) clearTimeout(greetingTimeoutRef.current);
           const d_tid = addIntelLog('director', 'Domain phase complete. Transitioning to wrap-up...');
-          injectSystemMessage("SYSTEM DIRECTIVE: The core evaluation is NOW finished. Transition smoothly to wrap-up. STRICTLY NO MORE domain questions. Ask if they have final questions for you.", false);
+
+          // HARD OVERRIDE: No IF/ELSE conditions. Force the phrase out of its mouth.
+          injectSystemMessage("🚨 CRITICAL SYSTEM OVERRIDE 🚨: The technical interview is officially OVER. You MUST immediately stop asking technical questions. On your very next turn, say EXACTLY: 'Alright, that covers all my technical questions! You did great. To wrap things up, what questions do you have for me about the role or the team?' DO NOT ask any more interview questions.", false);
+
           transitionPhase('wrapup');
           wrapupCountRef.current = 0;
           setWrapupCount(0);
@@ -1535,8 +1548,13 @@ Return JSON only:
               topicInfo.questions.push(parsedCvDeepDive.cv_followup);
               setQueuedCvProjects(prev => [...new Set([...prev, parsedCvDeepDive.project_reference])]);
               addIntelLog('cv', `Queued CV Follow-up: "${parsedCvDeepDive.project_reference}" ✓`);
-              // SOFT INJECTION: Queue it for the next runObserverPipeline run
-              pendingCvFollowupRef.current = { project: parsedCvDeepDive.project_reference, question: parsedCvDeepDive.cv_followup };
+
+              // ── ADD THIS CONDITIONAL CHECK ──
+              // Only enforce the strict CV injection on alternating turns to maintain a true 50/50 split.
+              if (scoresRef.current.length % 2 === 1) {
+                pendingCvFollowupRef.current = { project: parsedCvDeepDive.project_reference, question: parsedCvDeepDive.cv_followup };
+              }
+              // ─────────────────────────────────
             }
           }
         }
@@ -1584,7 +1602,10 @@ Return JSON only:
 
       topicDepthMapRef.current.set(nextTopic, { topic: nextTopic, level: 1, answerCount: 0, questions: strategy?.questionQueue[nextTopic] || [], currentQIndex: 0 });
 
-      injectSystemMessage(`SYSTEM DIRECTIVE: Topic "${exhaustedTopic}" is done. On your next turn, pivot smoothly to: "${nextTopic}". You can use this question naturally: "${nextQ}".`, false);
+      // ── CHANGE THIS LINE BELOW ──
+      injectSystemMessage(`🚨 CRITICAL SYSTEM OVERRIDE 🚨: The topic "${exhaustedTopic}" is completely EXHAUSTED. You are strictly forbidden from asking any more questions about it. On your very next turn, you MUST pivot to the new topic: "${nextTopic}". Ask exactly this question: "${nextQ}"`, false);
+      // ────────────────────────────
+
       updateIntelLog(tid, 'done', `Bridged to "${nextTopic}" ✓`);
     } catch (e) {
       console.error('[Bridge] failed:', e);
@@ -1621,6 +1642,7 @@ Return JSON only:
     setIsThinking(true);
     const tid = addIntelLog('strategy', 'Generating Universal Domain Strategy...');
     try {
+      // 2. Update the prompt inside `generateInterviewStrategy` (around line 757)
       const raw = await callMini(
         `CV Summary: ${cvSummaryRef.current}
 JD Context: ${jdTextRef.current.slice(0, 1000)}
@@ -1628,7 +1650,7 @@ JD Context: ${jdTextRef.current.slice(0, 1000)}
 Task: Generate a domain-specific interview strategy.
 RULES:
 1. STRICTLY FORBID generic "tell me about yourself" questions. 
-2. EVERY question MUST include a specific domain concept, methodology, or tool from the CV/JD.
+2. REQUIRED MIX: Exactly 50% of the questions in the queue MUST specifically reference the candidate's CV. The other 50% MUST be general domain questions based ONLY on the JD, completely unrelated to their CV.
 3. LVL 1: Foundational core concept.
 4. LVL 2: Applied scenario or trade-off.
 5. LVL 3: Complex problem-solving or edge cases.
@@ -1952,9 +1974,7 @@ Return JSON strictly matching:
         checkAIAudio();
       };
 
-      const ms = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 },
-      });
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = ms;
       ms.getTracks().forEach(t => pc.addTrack(t, ms));
 
@@ -1983,8 +2003,8 @@ Return JSON strictly matching:
           type: 'session.update',
           session: {
             instructions: `IMPORTANT: ONLY COMMUNICATE IN ENGLISH. \n\n` + buildActorPrompt('greeting'),
-            input_audio_transcription: { model: 'whisper-1', language: 'en' },
-            turn_detection: { type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300, silence_duration_ms: 1500 },
+            input_audio_transcription: { model: 'whisper-1' },
+            turn_detection: { type: 'server_vad' },
             modalities: ['text', 'audio'],
             voice: 'shimmer',
             tools: [], tool_choice: 'none',
