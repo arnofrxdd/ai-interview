@@ -1952,9 +1952,7 @@ Return JSON strictly matching:
         checkAIAudio();
       };
 
-      const ms = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 },
-      });
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = ms;
       ms.getTracks().forEach(t => pc.addTrack(t, ms));
 
@@ -1983,8 +1981,8 @@ Return JSON strictly matching:
           type: 'session.update',
           session: {
             instructions: `IMPORTANT: ONLY COMMUNICATE IN ENGLISH. \n\n` + buildActorPrompt('greeting'),
-            input_audio_transcription: { model: 'whisper-1', language: 'en' },
-            turn_detection: { type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300, silence_duration_ms: 1500 },
+            input_audio_transcription: { model: 'whisper-1' },
+            turn_detection: { type: 'server_vad' },
             modalities: ['text', 'audio'],
             voice: 'shimmer',
             tools: [], tool_choice: 'none',
