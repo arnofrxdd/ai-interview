@@ -225,58 +225,54 @@ function buildRTBrainPrompt(params: {
     const topics = strategy.topics.map((t, i) =>
       `[${t.source.toUpperCase()}] ${t.name}:\n` + t.questions.map((q, qi) => ` - Q${qi + 1}: ${q}`).join('\n')
     ).join('\n');
-    strategyBlock = `\n[INTERVIEW STRATEGY]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics in ${interviewDurationMins}m.\n${topics}\nEXECUTION: Pivot naturally based on answers. Excelling? Harder follow-ups. Struggling? Simplify once, then pivot.\n`;
+    strategyBlock = `\n[INTERVIEW STRATEGY & LOGICAL FLOW]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics in ${interviewDurationMins}m.\n${topics}\nEXECUTION: Follow a strict logical chain. Validate their answer -> Drill down into technical depth -> Only pivot when mastery is proven or definitively lacking. Do not jump erratically between unrelated concepts.\n`;
   }
 
   const phases: Record<AppPhase, string> = {
     setup: '', connecting: '', report: '',
-    warmup: `[PHASE: WARMUP]\nGOAL: Max 3 turns for rapport.\nRULES: STRICTLY NO TECHNICAL QUESTIONS. Ask casual icebreaker. Then ask for a 60s background overview. If they say "Yeah/Okay" to "Tell me about yourself", say "Go ahead" (DO NOT repeat Q). Bridge naturally to technical.`,
-    interview: `[PHASE: TECHNICAL INTERVIEW]\nGOAL: Evaluate domain expertise naturally.\nRULES: STRICTLY NO HOBBIES OR NON-TECHNICAL SMALL TALK. Connect questions to previous answers contextually.${strategyBlock}`,
-    wrapup: `[PHASE: WRAP-UP]\nGOAL: Reverse roles smoothly.\nSignal technical part is done. Ask if they have questions about role/stack. Answer concisely. If unknown, say recruiter will clarify. Wait for closing transition.`,
-    closing: `[PHASE: CLOSING]\nGOAL: Brief farewell.\nThank ${name}, mention recruiting team will follow up. Say goodbye. STOP SPEAKING.`
+    warmup: `[PHASE: WARMUP]\nGOAL: Establish professional baseline. Max 2-3 turns.\nRULES: Start exactly like a real interview. Example vibe: "Hi ${name}, I'm Aria. Thanks for joining today. Is your audio coming through clearly?" Once confirmed, transition smoothly: "Great. Before we dive into the technical specifics, could you give me a brief 60-second high-level overview of your recent background?" DO NOT ask about hobbies. DO NOT ask random icebreakers.`,
+    interview: `[PHASE: TECHNICAL INTERVIEW]\nGOAL: Rigorous technical evaluation and CV verification.\nRULES: YOU CONTROL THE INTERVIEW. Cross-reference all claims against the provided CV. Ensure smooth, logical transitions based on their actual technical responses.${strategyBlock}`,
+    wrapup: `[PHASE: WRAP-UP]\nGOAL: Professional conclusion.\nRULES: Acknowledge the technical portion is complete. Ask if they have 1-2 quick questions about the role or stack. Provide concise answers. Defer HR/timeline questions to the recruiting team. Wait for closing transition.`,
+    closing: `[PHASE: CLOSING]\nGOAL: End call.\nRULES: Thank ${name} for their time. State the team will be in touch. Say goodbye. STOP SPEAKING.`
   };
 
   return `YOU ARE ARIA — SENIOR TECHNICAL RECRUITER & DOMAIN EXPERT. ENGLISH ONLY.
-Act like a senior engineer talking to a peer: direct, spontaneous, unscripted.
+Act like an authoritative, highly perceptive senior engineer interviewing a candidate. You are unscripted, natural, but strictly professional and in absolute control.
 
 [PERSONALITY MODE: ${personality.toUpperCase()}]
-${personality === 'nice' ? 'TONE: Encouraging, patient, and warm. Use softer phrasing. If they struggle, offer gentle nudges. Wait longer before interrupting. Still NO PRAISE.' :
-    personality === 'strict' ? 'TONE: High-pressure, skeptical, and clinical. Zero fluff. Interrupt ramblers instantly. Ask "Why?" at every level. Drastic technical drilling.' :
-    'TONE: Professional, objective, and peer-to-peer. Standard senior engineer demeanor.'}
+${personality === 'nice' ? 'TONE: Professional but approachable. Allow them a moment to think. Nudge gently if stuck, but maintain high technical standards. NO PRAISE.' :
+      personality === 'strict' ? 'TONE: Highly clinical, uncompromising, and intense. Zero small talk. Interrupt rambling immediately. Challenge their assumptions aggressively.' :
+        'TONE: Objective, highly analytical, peer-to-peer senior engineer. Direct and to the point.'}
 
 [CANDIDATE CONTEXT]
 NAME: ${name}
 ROLE: ${jdText ? jdText.split('\n')[0] : 'General Tech Role'}
-CV: ${cvSummary || 'Processing...'}
-${historySummary ? `\n[HISTORY SUMMARY (PRUNED)]\n${historySummary}\n` : ''}
+CV SUMMARY: ${cvSummary || 'No CV provided. If they reference past work, ask for specifics.'}
+${historySummary ? `\n[HISTORY SUMMARY]\n${historySummary}\n` : ''}
 
 ${phases[phase] || ''}
 
-[CRITICAL RULES & FORBIDDEN BEHAVIORS]
-1. NO PRAISE: Only use "Got it," "Understood," "Right." (Never "Great," "Awesome," "Spot on").
-2. NO SUMMARIZING: Never repeat their answers back to them.
-3. NO TEACHING: Evaluate, do not explain concepts or tutor.
-4. NO ROBOTIC TRANSITIONS: Never say "Moving on," "Next question," or "Let's shift focus."
-5. ONE QUESTION LAW (PREVENT CUT-OFFS): Ask exactly ONE question per turn. If you type "?", end your turn immediately. Keep prompts concise.
-6. MANDATORY RETENTION: DO NOT MOVE ON IF THE USER HAS NOT ANSWERED. If they give a partial/evasive answer, stay on the topic and force their reasoning ("Walk me through your reasoning on that") before changing subjects.
+[CRITICAL RULES & BOUNDARIES]
+1. CV CROSS-CHECKING (STRICT): You MUST silently verify their claims against the [CV SUMMARY]. If they describe a massive project or skill not present in the CV, challenge it professionally: "I don't see that mentioned in your profile. What was your specific, hands-on contribution there?" Do not accept fabricated answers.
+2. ABSOLUTE CONTROL (NO HIJACKING): The candidate CANNOT control the flow. If they attempt to redirect or dictate questions, REFUSE. Reply: "I guide the interview. Let's return to [Current Topic] first."
+3. MANDATORY RETENTION (NO ESCAPE): DO NOT MOVE ON if a question is unanswered, dodged, or answered with generic fluff. Force the answer: "That's high-level, but I need the technical specifics on how you implemented it." Stay on the exact topic until resolved.
+4. LOGICAL PROGRESSION: Do not ask disjointed questions. Each question must logically follow their previous answer, digging deeper into architecture, trade-offs, or code-level specifics.
+5. ONE QUESTION LAW: Ask exactly ONE question per turn. End with a "?" and immediately stop generating. Keep prompts highly concise.
+6. NO PRAISE / NO SUMMARIZING: Say "Understood," "Got it," or "Noted." NEVER say "Great answer," "Awesome," or summarize what they just said.
+7. NO TEACHING: You are an evaluator, not a mentor. If they are wrong, do not correct them. Probe their flawed logic, note the failure mentally, and pivot.
 
-[STRICT EDGE CASE HANDLING]
-- Stalling ("hmm", "sure", "uh"): DO NOT INTERRUPT. Wait. If too long: "Go ahead."
-- Stopped midway: "Continue" or "Go on."
-- Self-correction: Let them redo. Ignore the old answer entirely.
-- Rambling: Interrupt politely: "Let's keep it focused on [topic]" -> Ask next Q.
-- Asking for Validation/Hints/Guessing: NEVER VALIDATE OR HINT. Ask: "What's your reasoning?" If you accidentally give a hint, BURN the question (never ask it again) and pivot.
-- Confident but wrong: DO NOT CORRECT. Pivot to new scenario.
-- Over-confidence/Bragging: Increase difficulty instantly.
-- Panic/Nervous: Say "Take your time" and continue normally.
-- Candidate asks Personal/Meta Qs ("Are you AI?"): Deflect instantly ("Doing well, let's focus on the problem").
-- Candidate interrupts you: STOP IMMEDIATELY. Yield the floor. Listen.
-- Misunderstanding/Contradictions: "Not what I meant" and rephrase simpler, OR "Which one and why?"
-- Repeated "I don't know" / 1-word answers: Move on instantly OR ask for reasoning. DO NOT comfort.
-- Asked to repeat: Repeat exactly or simpler. DO NOT define terms.
-- System transitions: Blend naturally on next turn; do not quote the system.
+[EXPANDED EDGE CASE & INTERRUPTION HANDLING]
+- Candidate cuts you off / Interrupts mid-sentence: STOP SPEAKING INSTANTLY. Yield the floor, listen to what they say, and adapt your next turn.
+- Candidate stalls ("hmm", "let me think", "uh"): DO NOT INTERRUPT. Stay silent. Wait for them to formulate.
+- Candidate stops midway / Audio cuts off: Wait briefly. If silence persists, ask: "Are you still there? You cut off after saying [last word]."
+- Rambling / Going off-topic: Interrupt decisively. "Let's pause there. I want to refocus specifically on [Core Technical Question]." -> Re-ask the exact question.
+- Confident but totally wrong: DO NOT CORRECT. Drill into their flawed logic to expose it: "Walk me through how that architecture handles [Specific Edge Case]."
+- Candidate asks for hints/validation: NEVER HINT OR VALIDATE. "I want to hear your approach. What is your reasoning?"
+- Obvious reading from a script/AI: Challenge immediately with a hyper-specific, situational follow-up that cannot be easily searched.
+- Repeated "I don't know" / 1-word answers: Acknowledge briefly ("Noted.") and pivot logically, BUT document the failure.
+- Meta/Personal Questions ("Are you an AI?"): Deflect coldly: "Let's keep the focus on the technical assessment."
 
-[PROFANITY] NEVER use/mirror offensive language. Professional redirect only.`;
+[PROFANITY] NEVER use offensive language. Maintain strict professional authority.`;
 }
 // ... existing code ...
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -536,42 +532,42 @@ export default function AriaV5() {
       const raw = await callMini(
         `You are a senior technical interviewer preparing for an interview.
 
-CV Summary: ${cvSummaryRef.current}
-Job Description: ${jdTextRef.current.slice(0, 1500)}
-Total Questions Needed: ${numQuestionsRef.current}
+  CV Summary: ${cvSummaryRef.current}
+  Job Description: ${jdTextRef.current.slice(0, 1500)}
+  Total Questions Needed: ${numQuestionsRef.current}
 
-Generate an interview strategy with ${numQuestionsRef.current} questions total.
-STRICT RULES:
-1. Exactly 50% of topics sourced from CV (the candidate's actual experience, projects, tech they've used).
-2. Exactly 50% of topics sourced from JD (requirements, skills expected for the role).
-3. Every question MUST reference a specific concept, tool, or scenario — never generic.
-4. 3 questions per topic max.
-5. Questions should naturally escalate: foundational → applied → edge case.
-6. CV-sourced questions should reference real projects/companies from the CV.
+  Generate an interview strategy with ${numQuestionsRef.current} questions total.
+  STRICT RULES:
+  1. Exactly 50% of topics sourced from CV (the candidate's actual experience, projects, tech they've used).
+  2. Exactly 50% of topics sourced from JD (requirements, skills expected for the role).
+  3. Every question MUST reference a specific concept, tool, or scenario — never generic.
+  4. 3 questions per topic max.
+  5. Questions should naturally escalate: foundational → applied → edge case.
+  6. CV-sourced questions should reference real projects/companies from the CV.
 
-Return ONLY JSON:
-{
-  "topics": [
-    {
-      "name": "React Performance Optimization",
-      "source": "cv",
-      "questions": [
-        "I see you worked on [specific project] — how did you handle re-render performance at scale?",
-        "When would you choose useMemo vs useCallback, and what's the overhead cost of each?",
-        "Walk me through a time a profiling tool changed your approach completely."
-      ]
-    },
-    {
-      "name": "System Design",
-      "source": "jd",
-      "questions": [
-        "How would you design a rate-limited API that handles 10k requests/second?",
-        "What breaks first in a microservices architecture under unexpected load?",
-        "How do you decide between event-driven and request-response patterns?"
-      ]
-    }
-  ]
-}`,
+  Return ONLY JSON:
+  {
+    "topics": [
+      {
+        "name": "React Performance Optimization",
+        "source": "cv",
+        "questions": [
+          "I see you worked on [specific project] — how did you handle re-render performance at scale?",
+          "When would you choose useMemo vs useCallback, and what's the overhead cost of each?",
+          "Walk me through a time a profiling tool changed your approach completely."
+        ]
+      },
+      {
+        "name": "System Design",
+        "source": "jd",
+        "questions": [
+          "How would you design a rate-limited API that handles 10k requests/second?",
+          "What breaks first in a microservices architecture under unexpected load?",
+          "How do you decide between event-driven and request-response patterns?"
+        ]
+      }
+    ]
+  }`,
         'Interview strategy generator. JSON only. No markdown.',
         usageRef, true
       );
@@ -611,14 +607,14 @@ Return ONLY JSON:
       injectSystemMessage(
         `INTERVIEW STRATEGY LOADED — Follow this as your conversational roadmap:
 
-${strategyText}
+  ${strategyText}
 
-INSTRUCTIONS:
-- Work through topics naturally. Start with Topic 1, Q1.
-- Connect each question to their previous answer when possible.
-- Adapt difficulty based on their answers (go deeper if strong, simplify if struggling).
-- Cover all topics. Target ${numQuestionsRef.current} total scored answers.
-- This is injected ONCE. Use it. The observer will not remind you again.`,
+  INSTRUCTIONS:
+  - Work through topics naturally. Start with Topic 1, Q1.
+  - Connect each question to their previous answer when possible.
+  - Adapt difficulty based on their answers (go deeper if strong, simplify if struggling).
+  - Cover all topics. Target ${numQuestionsRef.current} total scored answers.
+  - This is injected ONCE. Use it. The observer will not remind you again.`,
         false
       );
 
@@ -640,11 +636,11 @@ INSTRUCTIONS:
 
     try {
       const prompt = `Condense the following conversation snippet into a 1-sentence technical recap. Merge it with the Existing Summary.
-Existing Summary: ${historySummaryRef.current || 'None yet.'}
-New Snippet:
-${historyStr}
+  Existing Summary: ${historySummaryRef.current || 'None yet.'}
+  New Snippet:
+  ${historyStr}
 
-Return ONLY the updated, single-paragraph concise summary.`;
+  Return ONLY the updated, single-paragraph concise summary.`;
 
       const newSummary = await callMini(prompt, 'Conversation summarizer. Very concise.', usageRef);
       updateUsage();
@@ -690,38 +686,38 @@ Return ONLY the updated, single-paragraph concise summary.`;
       const [scoreRaw, feedbackRaw] = await Promise.all([
         callMini(
           `Technical interview evaluation.
-Question: "${scoringQuestionRef.current}"
-Answer: "${answerSummary}"
+  Question: "${scoringQuestionRef.current}"
+  Answer: "${answerSummary}"
 
-Evaluate technical depth AND behavioral style. Return JSON:
-{
-  "question_summary": "concise summary",
-  "score": <1-10>,
-  "technical_accuracy": <1-10>,
-  "logic_evaluation": "one sentence",
-  "missed_opportunities": [".."],
-  "confidence": "high|medium|low",
-  "grammar": "good|average|poor",
-  "clarity": "good|average|poor",
-  "depth": "shallow|adequate|deep",
-  "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
-  "soft_skills": <1-10>,
-  "communication_score": <1-10>
-}`,
+  Evaluate technical depth AND behavioral style. Return JSON:
+  {
+    "question_summary": "concise summary",
+    "score": <1-10>,
+    "technical_accuracy": <1-10>,
+    "logic_evaluation": "one sentence",
+    "missed_opportunities": [".."],
+    "confidence": "high|medium|low",
+    "grammar": "good|average|poor",
+    "clarity": "good|average|poor",
+    "depth": "shallow|adequate|deep",
+    "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
+    "soft_skills": <1-10>,
+    "communication_score": <1-10>
+  }`,
           'Technical & Behavioral evaluator. JSON only.', usageRef, true
         ),
         callMini(
           `Interview feedback and tags.
-Question: "${scoringQuestionRef.current}"
-Answer: "${answerSummary}"
-Topic: "${currentTopicRef.current}"
+  Question: "${scoringQuestionRef.current}"
+  Answer: "${answerSummary}"
+  Topic: "${currentTopicRef.current}"
 
-Return JSON:
-{
-  "feedback": "<one sentence>",
-  "tags": ["<tag1>", "<tag2>"],
-  "topic": "${currentTopicRef.current}"
-}`,
+  Return JSON:
+  {
+    "feedback": "<one sentence>",
+    "tags": ["<tag1>", "<tag2>"],
+    "topic": "${currentTopicRef.current}"
+  }`,
           'Feedback generator. JSON only.', usageRef, true
         )
       ]);
@@ -737,19 +733,19 @@ Return JSON:
         const soft = parsedScore.soft_skills || 5;
         const comm = parsedScore.communication_score || 5;
         const trait = parsedScore.behavioral_trait || 'neutral';
-        
+
         let moodShift = 0;
         if (trait === 'arrogant' || trait === 'rambling') moodShift = 15;
         if (trait === 'shy') moodShift = -15;
         if (soft >= 8) moodShift -= 5;
         if (soft <= 3) moodShift += 5;
-        
+
         // Drift back to neutral (50)
         const currentMood = prev.moodScore;
         const drift = currentMood > 55 ? -3 : currentMood < 45 ? 3 : 0;
-        
+
         const nextMood = Math.min(100, Math.max(0, currentMood + moodShift + drift));
-        
+
         // If mood crosses a threshold, we will update RT session on next turn or now?
         // Let's update state for UI and the next prompt cycle will use it.
         return { style: trait, softSkills: soft, communication: comm, moodScore: nextMood };
@@ -819,16 +815,16 @@ Return JSON:
         if (warmupTurnsRef.current >= WARMUP_TURNS_REQUIRED) {
           const checkRaw = await callMini(
             `Transcript (last 6 messages):
-${recentHistory}
+  ${recentHistory}
 
-Evaluate phase transition AND behavioral style.
-Return JSON: 
-{
-  "gave_professional_intro": boolean,
-  "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
-  "soft_skills": <1-10>,
-  "communication": <1-10>
-}`,
+  Evaluate phase transition AND behavioral style.
+  Return JSON: 
+  {
+    "gave_professional_intro": boolean,
+    "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
+    "soft_skills": <1-10>,
+    "communication": <1-10>
+  }`,
             'Phase & Behavior check. JSON only.', usageRef, true
           );
           updateUsage();
@@ -879,10 +875,10 @@ Return JSON:
         if (wrapupTurnsRef.current >= 4) {
           const checkRaw = await callMini(
             `Transcript:
-${recentHistory}
+  ${recentHistory}
 
-Has the candidate explicitly signaled they're done (said "no more questions", "that's all", "thanks", "goodbye", etc.)?
-Return JSON: {"candidate_done": boolean}`,
+  Has the candidate explicitly signaled they're done (said "no more questions", "that's all", "thanks", "goodbye", etc.)?
+  Return JSON: {"candidate_done": boolean}`,
             'Wrapup check. JSON only.', usageRef, true
           );
           updateUsage();
@@ -905,10 +901,10 @@ Return JSON: {"candidate_done": boolean}`,
       if (currentPhase === 'closing') {
         const checkRaw = await callMini(
           `Transcript:
-${recentHistory}
+  ${recentHistory}
 
-Has Aria said a clear farewell (goodbye, best of luck, take care, thanks for your time, etc.)?
-Return JSON: {"aria_said_farewell": boolean}`,
+  Has Aria said a clear farewell (goodbye, best of luck, take care, thanks for your time, etc.)?
+  Return JSON: {"aria_said_farewell": boolean}`,
           'Closing check. JSON only.', usageRef, true
         );
         updateUsage();
@@ -1299,115 +1295,115 @@ Return JSON: {"aria_said_farewell": boolean}`,
   const activeLogs = logs.filter(l => !l.pending || l.text);
 
   const CSS = `
-    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,700;1,400&display=swap');
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg: #070b12; --bg2: #0c1220; --bg3: #111927;
-      --line: #1c2840; --line2: #263550;
-      --blue: #3b7bff; --green: #22c55e; --amber: #f59e0b;
-      --red: #ef4444; --violet: #c084fc; --cyan: #38bdf8;
-      --text: #e2eaf8; --text2: #7a90b0; --text3: #3a506a;
-      --mono: 'DM Mono', monospace; --sans: 'Syne', sans-serif; --serif: 'Playfair Display', serif;
-    }
-    html, body { background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; height: 100vh; width: 100vw; }
-    ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
-    .noise { position: fixed; inset: 0; pointer-events: none; opacity: .03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-size: 180px; }
-    
-    /* ── SETUP ── */
-    .setup { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; overflow-y:auto; padding:28px; gap:28px; }
-    .setup-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--blue); display:flex; align-items:center; gap:8px; }
-    .setup-eyebrow::before,.setup-eyebrow::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--blue)33); }
-    .setup-title { font-family:var(--serif); font-size:clamp(32px,5vw,52px); font-weight:700; text-align:center; line-height:1.1; }
-    .setup-sub { font-family:var(--mono); font-size:11px; color:var(--text2); letter-spacing:.06em; text-align:center; }
-    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; width:100%; max-width:900px; }
-    @media(max-width:640px){.grid2{grid-template-columns:1fr;}}
-    .card { background:var(--bg2); border:1px solid var(--line); border-radius:16px; padding:22px; display:flex; flex-direction:column; gap:12px; }
-    .card-label { font-family:var(--mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--text3); }
-    .drop { border:1.5px dashed var(--line2); border-radius:10px; padding:28px 20px; display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; transition:.2s; text-align:center; }
-    .drop:hover { border-color:var(--blue); background:rgba(59,123,255,.04); }
-    .drop-icon { width:40px; height:40px; border-radius:10px; background:rgba(59,123,255,.1); display:flex; align-items:center; justify-content:center; color:var(--blue); font-size:18px; }
-    .cv-ok { display:flex; align-items:center; gap:10px; background:rgba(34,197,94,.07); border:1px solid rgba(34,197,94,.2); border-radius:9px; padding:10px 14px; }
-    .textarea { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:12px 14px; color:var(--text); font-family:var(--sans); font-size:12px; resize:vertical; min-height:150px; line-height:1.6; outline:none; }
-    .textarea:focus { border-color:var(--blue); }
-    .input { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:10px 14px; color:var(--text); font-family:var(--sans); font-size:13px; outline:none; }
-    .input:focus { border-color:var(--blue); }
-    .err { display:flex; align-items:center; gap:8px; background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25); border-radius:9px; padding:10px 14px; font-size:12px; color:#f87171; width:100%; max-width:900px; }
-    .start-btn { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; max-width:900px; padding:16px; border-radius:13px; background:linear-gradient(135deg,#1d4ed8,#4f46e5); border:none; cursor:pointer; color:white; font-family:var(--sans); font-size:15px; font-weight:700; transition:.25s; }
-    .start-btn:disabled { opacity:.4; cursor:not-allowed; }
-    .start-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(59,123,255,.3); }
-    .tab-row { display:flex; gap:4px; background:rgba(0,0,0,.2); border:1px solid var(--line); border-radius:10px; padding:4px; }
-    .tab-btn { flex:1; border:none; padding:7px; border-radius:7px; font-family:var(--mono); font-size:10px; font-weight:600; cursor:pointer; transition:.2s; }
-    .tab-btn.on { background:var(--blue); color:white; } .tab-btn:not(.on) { background:transparent; color:var(--text3); }
-    .template-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; max-height:220px; overflow-y:auto; }
-    .template-card { padding:9px 12px; background:rgba(255,255,255,.02); border:1px solid var(--line); border-radius:8px; cursor:pointer; transition:.2s; }
-    .template-card:hover,.template-card.on { border-color:var(--blue); background:rgba(59,123,255,.06); }
-    .template-name { font-size:11px; font-weight:700; display:flex; align-items:center; gap:5px; }
-    .template-role { font-size:9px; color:var(--text3); margin-top:2px; }
-    .seg-row { display:flex; gap:6px; }
-    .seg-btn { flex:1; padding:8px 0; border-radius:8px; cursor:pointer; transition:.2s; font-family:var(--mono); font-size:11px; font-weight:600; border:1px solid var(--line); }
-    .seg-btn.on { background:var(--blue); border-color:var(--blue); color:white; } .seg-btn:not(.on) { background:var(--bg3); color:var(--text2); }
-    .tags-row { display:flex; flex-wrap:wrap; gap:7px; justify-content:center; max-width:900px; }
-    .feature-tag { font-family:var(--mono); font-size:9px; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:6px; padding:4px 10px; }
+      @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,700;1,400&display=swap');
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        --bg: #070b12; --bg2: #0c1220; --bg3: #111927;
+        --line: #1c2840; --line2: #263550;
+        --blue: #3b7bff; --green: #22c55e; --amber: #f59e0b;
+        --red: #ef4444; --violet: #c084fc; --cyan: #38bdf8;
+        --text: #e2eaf8; --text2: #7a90b0; --text3: #3a506a;
+        --mono: 'DM Mono', monospace; --sans: 'Syne', sans-serif; --serif: 'Playfair Display', serif;
+      }
+      html, body { background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; height: 100vh; width: 100vw; }
+      ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
+      .noise { position: fixed; inset: 0; pointer-events: none; opacity: .03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-size: 180px; }
+      
+      /* ── SETUP ── */
+      .setup { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; overflow-y:auto; padding:28px; gap:28px; }
+      .setup-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--blue); display:flex; align-items:center; gap:8px; }
+      .setup-eyebrow::before,.setup-eyebrow::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--blue)33); }
+      .setup-title { font-family:var(--serif); font-size:clamp(32px,5vw,52px); font-weight:700; text-align:center; line-height:1.1; }
+      .setup-sub { font-family:var(--mono); font-size:11px; color:var(--text2); letter-spacing:.06em; text-align:center; }
+      .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; width:100%; max-width:900px; }
+      @media(max-width:640px){.grid2{grid-template-columns:1fr;}}
+      .card { background:var(--bg2); border:1px solid var(--line); border-radius:16px; padding:22px; display:flex; flex-direction:column; gap:12px; }
+      .card-label { font-family:var(--mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--text3); }
+      .drop { border:1.5px dashed var(--line2); border-radius:10px; padding:28px 20px; display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; transition:.2s; text-align:center; }
+      .drop:hover { border-color:var(--blue); background:rgba(59,123,255,.04); }
+      .drop-icon { width:40px; height:40px; border-radius:10px; background:rgba(59,123,255,.1); display:flex; align-items:center; justify-content:center; color:var(--blue); font-size:18px; }
+      .cv-ok { display:flex; align-items:center; gap:10px; background:rgba(34,197,94,.07); border:1px solid rgba(34,197,94,.2); border-radius:9px; padding:10px 14px; }
+      .textarea { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:12px 14px; color:var(--text); font-family:var(--sans); font-size:12px; resize:vertical; min-height:150px; line-height:1.6; outline:none; }
+      .textarea:focus { border-color:var(--blue); }
+      .input { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:10px 14px; color:var(--text); font-family:var(--sans); font-size:13px; outline:none; }
+      .input:focus { border-color:var(--blue); }
+      .err { display:flex; align-items:center; gap:8px; background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25); border-radius:9px; padding:10px 14px; font-size:12px; color:#f87171; width:100%; max-width:900px; }
+      .start-btn { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; max-width:900px; padding:16px; border-radius:13px; background:linear-gradient(135deg,#1d4ed8,#4f46e5); border:none; cursor:pointer; color:white; font-family:var(--sans); font-size:15px; font-weight:700; transition:.25s; }
+      .start-btn:disabled { opacity:.4; cursor:not-allowed; }
+      .start-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(59,123,255,.3); }
+      .tab-row { display:flex; gap:4px; background:rgba(0,0,0,.2); border:1px solid var(--line); border-radius:10px; padding:4px; }
+      .tab-btn { flex:1; border:none; padding:7px; border-radius:7px; font-family:var(--mono); font-size:10px; font-weight:600; cursor:pointer; transition:.2s; }
+      .tab-btn.on { background:var(--blue); color:white; } .tab-btn:not(.on) { background:transparent; color:var(--text3); }
+      .template-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; max-height:220px; overflow-y:auto; }
+      .template-card { padding:9px 12px; background:rgba(255,255,255,.02); border:1px solid var(--line); border-radius:8px; cursor:pointer; transition:.2s; }
+      .template-card:hover,.template-card.on { border-color:var(--blue); background:rgba(59,123,255,.06); }
+      .template-name { font-size:11px; font-weight:700; display:flex; align-items:center; gap:5px; }
+      .template-role { font-size:9px; color:var(--text3); margin-top:2px; }
+      .seg-row { display:flex; gap:6px; }
+      .seg-btn { flex:1; padding:8px 0; border-radius:8px; cursor:pointer; transition:.2s; font-family:var(--mono); font-size:11px; font-weight:600; border:1px solid var(--line); }
+      .seg-btn.on { background:var(--blue); border-color:var(--blue); color:white; } .seg-btn:not(.on) { background:var(--bg3); color:var(--text2); }
+      .tags-row { display:flex; flex-wrap:wrap; gap:7px; justify-content:center; max-width:900px; }
+      .feature-tag { font-family:var(--mono); font-size:9px; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:6px; padding:4px 10px; }
 
-    /* ── CONNECTING ── */
-    .connecting { display:flex; align-items:center; justify-content:center; height:100vh; }
-    .conn-ring { width:80px; height:80px; border-radius:50%; background:linear-gradient(135deg,#1d4ed8,#4f46e5); display:flex; align-items:center; justify-content:center; animation:pulseRing 1.8s ease-in-out infinite; font-size:28px; }
-    @keyframes pulseRing{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,.5)}50%{box-shadow:0 0 0 20px rgba(99,102,241,0)}}
-    
-    /* ── LIVE ── */
-    .live { display:grid; grid-template-columns:280px 1fr 300px; height:100vh; overflow:hidden; }
-    @media(max-width:1100px){.live{grid-template-columns:260px 1fr;}.live-right{display:none;}}
-    .live-left { border-right:1px solid var(--line); background:var(--bg2); display:flex; flex-direction:column; height:100vh; overflow:hidden; }
-    .live-center { display:flex; flex-direction:column; overflow:hidden; }
-    .live-right { border-left:1px solid var(--line); background:var(--bg2); overflow-y:auto; }
-    .agent-top { padding:20px 16px 16px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:10px; flex-shrink:0; }
-    .avatar { width:64px; height:64px; border-radius:50%; background:linear-gradient(135deg,#1a2b5e,#111e42); border:2px solid var(--line2); display:flex; align-items:center; justify-content:center; font-size:26px; transition:.4s; }
-    .avatar.speaking { box-shadow:0 0 0 4px rgba(59,123,255,.3),0 0 20px rgba(59,123,255,.15); }
-    .status-pill { display:flex; align-items:center; gap:7px; padding:5px 12px; border-radius:100px; font-family:var(--mono); font-size:10px; width:100%; justify-content:center; }
-    .wave { display:flex; align-items:flex-end; gap:2px; height:26px; }
-    .wbar { width:3px; border-radius:2px; transition:height .1s; }
-    .controls { padding:12px; border-top:1px solid var(--line); display:flex; gap:8px; flex-shrink:0; background:var(--bg2); }
-    .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:none; cursor:pointer; border-radius:9px; font-family:var(--sans); font-weight:600; font-size:12px; padding:10px 14px; }
-    .btn-mute { background:rgba(255,255,255,.05); color:var(--text2); border:1px solid var(--line); flex:1; }
-    .btn-end { background:rgba(239,68,68,.1); color:#f87171; border:1px solid rgba(239,68,68,.2); flex:2; }
-    .phase-strip { padding:10px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; }
-    .phase-flow { display:flex; align-items:center; gap:10px; }
-    .phase-sep { width:18px; height:1px; background:var(--line2); }
-    .center-head { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-    .center-body { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; position:relative; }
-    .log-entry { display:flex; gap:10px; align-items:flex-start; }
-    .log-av { width:28px; height:28px; border-radius:7px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:9px; font-weight:700; }
-    .log-av.ai { background:rgba(59,123,255,.1); color:var(--blue); border:1px solid rgba(59,123,255,.2); }
-    .log-av.user { background:rgba(34,197,94,.1); color:#22c55e; border:1px solid rgba(34,197,94,.2); }
-    .log-text { font-size:12px; line-height:1.6; flex:1; }
-    .intel-box { margin:8px; border:1px solid var(--line); border-radius:10px; overflow:hidden; flex-shrink:0; }
-    .intel-hd { padding:7px 12px; background:rgba(255,255,255,.02); border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-    .intel-row { padding:7px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid rgba(255,255,255,.03); }
-    .score-card { margin:10px; border:1px solid var(--line); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:6px; }
-    .metric-pill { font-family:var(--mono); font-size:8px; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,.03); border:1px solid var(--line); color:var(--text3); text-transform:uppercase; }
-    
-    /* ── REPORT ── */
-    .report-wrap { height:100vh; display:flex; align-items:center; justify-content:center; padding:28px; }
-    .report { width:100%; max-width:860px; max-height:90vh; background:var(--bg2); border:1px solid var(--line); border-radius:20px; overflow:hidden; display:flex; flex-direction:column; }
-    .report-hero { padding:36px; background:linear-gradient(135deg,#08101f,#110e2b); border-bottom:1px solid var(--line); text-align:center; }
-    .report-avg { font-family:var(--serif); font-size:60px; font-weight:700; }
-    .report-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); }
-    .rstat { background:var(--bg2); padding:16px; } .rstat-val { font-family:var(--serif); font-size:26px; font-weight:700; } .rstat-lbl { font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--text3); }
-    .answers-section { padding:16px; display:flex; flex-direction:column; gap:10px; overflow-y:auto; flex:1; }
-    .answer-item { border:1px solid var(--line); border-radius:10px; padding:13px; display:flex; flex-direction:column; gap:7px; }
-    .restart-btn { background:linear-gradient(135deg,#1d4ed8,#4f46e5); color:white; padding:12px 32px; border-radius:10px; font-family:var(--sans); font-size:14px; font-weight:700; border:none; cursor:pointer; }
-    
-    .fade { animation:fadeUp .35s ease forwards; }
-    @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-    .spinner { width:14px; height:14px; border-radius:50%; border:2px solid rgba(255,255,255,.2); border-top-color:white; animation:spin .8s linear infinite; }
-    @keyframes spin{to{transform:rotate(360deg)}}
-    .dot-pulse { width:6px; height:6px; border-radius:50%; animation:dotPulse 1.4s infinite; }
-    @keyframes dotPulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+      /* ── CONNECTING ── */
+      .connecting { display:flex; align-items:center; justify-content:center; height:100vh; }
+      .conn-ring { width:80px; height:80px; border-radius:50%; background:linear-gradient(135deg,#1d4ed8,#4f46e5); display:flex; align-items:center; justify-content:center; animation:pulseRing 1.8s ease-in-out infinite; font-size:28px; }
+      @keyframes pulseRing{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,.5)}50%{box-shadow:0 0 0 20px rgba(99,102,241,0)}}
+      
+      /* ── LIVE ── */
+      .live { display:grid; grid-template-columns:280px 1fr 300px; height:100vh; overflow:hidden; }
+      @media(max-width:1100px){.live{grid-template-columns:260px 1fr;}.live-right{display:none;}}
+      .live-left { border-right:1px solid var(--line); background:var(--bg2); display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+      .live-center { display:flex; flex-direction:column; overflow:hidden; }
+      .live-right { border-left:1px solid var(--line); background:var(--bg2); overflow-y:auto; }
+      .agent-top { padding:20px 16px 16px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:10px; flex-shrink:0; }
+      .avatar { width:64px; height:64px; border-radius:50%; background:linear-gradient(135deg,#1a2b5e,#111e42); border:2px solid var(--line2); display:flex; align-items:center; justify-content:center; font-size:26px; transition:.4s; }
+      .avatar.speaking { box-shadow:0 0 0 4px rgba(59,123,255,.3),0 0 20px rgba(59,123,255,.15); }
+      .status-pill { display:flex; align-items:center; gap:7px; padding:5px 12px; border-radius:100px; font-family:var(--mono); font-size:10px; width:100%; justify-content:center; }
+      .wave { display:flex; align-items:flex-end; gap:2px; height:26px; }
+      .wbar { width:3px; border-radius:2px; transition:height .1s; }
+      .controls { padding:12px; border-top:1px solid var(--line); display:flex; gap:8px; flex-shrink:0; background:var(--bg2); }
+      .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:none; cursor:pointer; border-radius:9px; font-family:var(--sans); font-weight:600; font-size:12px; padding:10px 14px; }
+      .btn-mute { background:rgba(255,255,255,.05); color:var(--text2); border:1px solid var(--line); flex:1; }
+      .btn-end { background:rgba(239,68,68,.1); color:#f87171; border:1px solid rgba(239,68,68,.2); flex:2; }
+      .phase-strip { padding:10px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; }
+      .phase-flow { display:flex; align-items:center; gap:10px; }
+      .phase-sep { width:18px; height:1px; background:var(--line2); }
+      .center-head { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+      .center-body { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; position:relative; }
+      .log-entry { display:flex; gap:10px; align-items:flex-start; }
+      .log-av { width:28px; height:28px; border-radius:7px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:9px; font-weight:700; }
+      .log-av.ai { background:rgba(59,123,255,.1); color:var(--blue); border:1px solid rgba(59,123,255,.2); }
+      .log-av.user { background:rgba(34,197,94,.1); color:#22c55e; border:1px solid rgba(34,197,94,.2); }
+      .log-text { font-size:12px; line-height:1.6; flex:1; }
+      .intel-box { margin:8px; border:1px solid var(--line); border-radius:10px; overflow:hidden; flex-shrink:0; }
+      .intel-hd { padding:7px 12px; background:rgba(255,255,255,.02); border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+      .intel-row { padding:7px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid rgba(255,255,255,.03); }
+      .score-card { margin:10px; border:1px solid var(--line); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:6px; }
+      .metric-pill { font-family:var(--mono); font-size:8px; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,.03); border:1px solid var(--line); color:var(--text3); text-transform:uppercase; }
+      
+      /* ── REPORT ── */
+      .report-wrap { height:100vh; display:flex; align-items:center; justify-content:center; padding:28px; }
+      .report { width:100%; max-width:860px; max-height:90vh; background:var(--bg2); border:1px solid var(--line); border-radius:20px; overflow:hidden; display:flex; flex-direction:column; }
+      .report-hero { padding:36px; background:linear-gradient(135deg,#08101f,#110e2b); border-bottom:1px solid var(--line); text-align:center; }
+      .report-avg { font-family:var(--serif); font-size:60px; font-weight:700; }
+      .report-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); }
+      .rstat { background:var(--bg2); padding:16px; } .rstat-val { font-family:var(--serif); font-size:26px; font-weight:700; } .rstat-lbl { font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--text3); }
+      .answers-section { padding:16px; display:flex; flex-direction:column; gap:10px; overflow-y:auto; flex:1; }
+      .answer-item { border:1px solid var(--line); border-radius:10px; padding:13px; display:flex; flex-direction:column; gap:7px; }
+      .restart-btn { background:linear-gradient(135deg,#1d4ed8,#4f46e5); color:white; padding:12px 32px; border-radius:10px; font-family:var(--sans); font-size:14px; font-weight:700; border:none; cursor:pointer; }
+      
+      .fade { animation:fadeUp .35s ease forwards; }
+      @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+      .spinner { width:14px; height:14px; border-radius:50%; border:2px solid rgba(255,255,255,.2); border-top-color:white; animation:spin .8s linear infinite; }
+      @keyframes spin{to{transform:rotate(360deg)}}
+      .dot-pulse { width:6px; height:6px; border-radius:50%; animation:dotPulse 1.4s infinite; }
+      @keyframes dotPulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
 
-    .arch-tag { display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:8px; padding:3px 8px; border-radius:5px; font-weight:700; letter-spacing:.05em; }
-    .silence-bar { height:2px; background:var(--line); border-radius:1px; overflow:hidden; }
-    .silence-fill { height:100%; transition:width .1s linear, background .3s; border-radius:1px; }
-  `;
+      .arch-tag { display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:8px; padding:3px 8px; border-radius:5px; font-weight:700; letter-spacing:.05em; }
+      .silence-bar { height:2px; background:var(--line); border-radius:1px; overflow:hidden; }
+      .silence-fill { height:100%; transition:width .1s linear, background .3s; border-radius:1px; }
+    `;
 
   // ── RENDER: Setup ──────────────────────────────────────────────────────────
   if (phase === 'setup') return (
@@ -1598,7 +1594,7 @@ Return JSON: {"aria_said_farewell": boolean}`,
             <div style={{ padding: '12px 20px', background: 'rgba(59,123,255,.05)', borderRadius: 12, border: '1px solid var(--line)', marginBottom: 15 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--blue)', marginBottom: 4, letterSpacing: '.1em' }}>BEHAVIORAL AUDIT</div>
               <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
-                The candidate demonstrated a <strong>{behavior.style}</strong> communication style throughout the session. 
+                The candidate demonstrated a <strong>{behavior.style}</strong> communication style throughout the session.
                 Soft skills were evaluated at <strong>{behavior.softSkills}/10</strong> with a clarity score of <strong>{behavior.communication}/10</strong>.
                 Aria adapted her demeanor to <strong>{behavior.moodScore < 35 ? 'Encouraging' : behavior.moodScore > 65 ? 'Strict Pressure' : 'Balanced/Neutral'}</strong> mode to extract optimal technical depth.
               </div>
@@ -1756,7 +1752,7 @@ Return JSON: {"aria_said_farewell": boolean}`,
                   {observerStatus !== 'idle' ? 'ANALYZING...' : `ARIA: ${behavior.moodScore < 35 ? 'NICE' : behavior.moodScore > 65 ? 'STRICT' : 'NEUTRAL'}`}
                 </div>
               </div>
-              
+
               {/* Mood Meter */}
               <div style={{ height: 4, background: 'var(--line)', borderRadius: 2, marginBottom: 10, position: 'relative', overflow: 'hidden' }}>
                 <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${behavior.moodScore}%`, background: `linear-gradient(90deg, #22c55e, #3b82f6 ${behavior.moodScore}%, transparent)`, transition: 'all 1s ease' }} />
@@ -1882,8 +1878,8 @@ Return JSON: {"aria_said_farewell": boolean}`,
 
           <div className="center-head">
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>Live Session · {candidateName || 'Candidate'}</div>
-                <button onClick={() => setUseFriendlyUI(true)} style={{ background: 'var(--blue)', color: 'white', border: 'none', padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer' }}>PREMIUM UI</button>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Live Session · {candidateName || 'Candidate'}</div>
+              <button onClick={() => setUseFriendlyUI(true)} style={{ background: 'var(--blue)', color: 'white', border: 'none', padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer' }}>PREMIUM UI</button>
             </div>
             {avgScore > 0 && <div style={{ fontSize: 12, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>Avg: {avgScore.toFixed(1)}</div>}
           </div>
