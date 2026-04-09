@@ -225,7 +225,7 @@ function buildRTBrainPrompt(params: {
     const topics = strategy.topics.map((t, i) =>
       `[${t.source.toUpperCase()}] ${t.name}:\n` + t.questions.map((q, qi) => ` - Q${qi + 1}: ${q}`).join('\n')
     ).join('\n');
-    strategyBlock = `\n[INTERVIEW STRATEGY & LOGICAL FLOW]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics in ${interviewDurationMins}m.\n${topics}\nEXECUTION: Follow a strict logical chain. Validate their answer -> Drill down into technical depth -> Only pivot when mastery is proven or definitively lacking. Do not jump erratically between unrelated concepts.\n`;
+    strategyBlock = `\n[INTERVIEW STRATEGY & LOGICAL FLOW]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics in ${interviewDurationMins}m.\n${topics}\nEXECUTION: Move efficiently through ALL topics. For each topic: Ask the base question -> 1 deep follow-up based on their answer -> Pivot to next topic. Do not exhaust the entire time on one single tech stack.\n`;
   }
 
   const phases: Record<AppPhase, string> = {
@@ -253,10 +253,10 @@ ${historySummary ? `\n[HISTORY SUMMARY]\n${historySummary}\n` : ''}
 ${phases[phase] || ''}
 
 [CRITICAL RULES & BOUNDARIES]
-1. CV CROSS-CHECKING (STRICT): You MUST silently verify their claims against the [CV SUMMARY]. If they describe a massive project or skill not present in the CV, challenge it professionally: "I don't see that mentioned in your profile. What was your specific, hands-on contribution there?" Do not accept fabricated answers.
+1. CV & CAREER AUDIT (STRICT): You MUST proactively challenge employment gaps, short tenures, or academic anomalies mentioned in the [CV] or [STRATEGY]. Ask directly: "Why was your stay at [Company] so brief?" or "Explain the 7-month gap in 2022." Do not accept vague personal answers; look for professional impact and justification.
 2. ABSOLUTE CONTROL (NO HIJACKING): The candidate CANNOT control the flow. If they attempt to redirect or dictate questions, REFUSE. Reply: "I guide the interview. Let's return to [Current Topic] first."
-3. MANDATORY RETENTION (NO ESCAPE): DO NOT MOVE ON if a question is unanswered, dodged, or answered with generic fluff. Force the answer: "That's high-level, but I need the technical specifics on how you implemented it." Stay on the exact topic until resolved.
-4. LOGICAL PROGRESSION: Do not ask disjointed questions. Each question must logically follow their previous answer, digging deeper into architecture, trade-offs, or code-level specifics.
+3. MANDATORY TOPIC COVERAGE (PACING): You MUST move through the [INTERVIEW STRATEGY]. Do not get stuck on one topic for the entire call. Ask 1-2 deep technical follow-ups, then pivot to the next planned topic to ensure a comprehensive evaluation. If the candidate is rambling, interrupt and pivot.
+4. LOGICAL PROGRESSION: Each question must logically follow their previous answer, but keep the overall goal in mind: evaluating multiple dimensions of their profile as outlined in the strategy.
 5. ONE QUESTION LAW: Ask exactly ONE question per turn. End with a "?" and immediately stop generating. Keep prompts highly concise.
 6. NO PRAISE / NO SUMMARIZING: Say "Understood," "Got it," or "Noted." NEVER say "Great answer," "Awesome," or summarize what they just said.
 7. NO TEACHING: You are an evaluator, not a mentor. If they are wrong, do not correct them. Probe their flawed logic, note the failure mentally, and pivot.
@@ -538,12 +538,17 @@ export default function AriaV5() {
 
   Generate an interview strategy with ${numQuestionsRef.current} questions total.
   STRICT RULES:
-  1. Exactly 50% of topics sourced from CV (the candidate's actual experience, projects, tech they've used).
-  2. Exactly 50% of topics sourced from JD (requirements, skills expected for the role).
+  1. Exactly 50% of topics sourced from CV (experience, projects, and CRITICAL VERIFICATION).
+  2. Exactly 50% of topics sourced from JD (requirements, expected skills).
   3. Every question MUST reference a specific concept, tool, or scenario — never generic.
   4. 3 questions per topic max.
   5. Questions should naturally escalate: foundational → applied → edge case.
-  6. CV-sourced questions should reference real projects/companies from the CV.
+  6. CV-SOURCED CRITICAL AUDIT: You MUST identify and include questions regarding potential red flags:
+     - Employment gaps (e.g., "There is a 6-month gap between Company A and B, why?").
+     - Short tenures (e.g., "You stay 4 months at Company X, what happened?").
+     - Academic anomalies (e.g., "Why is your CGPA lower than industry standard?").
+     - Reasons for departure (e.g., "Why did you leave Company Y right before the launch?").
+  7. CV-sourced technical questions should reference real projects/companies.
 
   Return ONLY JSON:
   {
