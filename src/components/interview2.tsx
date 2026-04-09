@@ -1,42 +1,34 @@
 'use client';
 
 /**
- * Aria v5 — AI Interview System (RT-Brain Architecture)
- *
- * CORE PHILOSOPHY SHIFT FROM v4:
+ * ARIA v6 — Conductor Architecture
  * ════════════════════════════════════════════════════════
  *
- * v4 Problem: Observer micro-managed RT with constant injections → random questions,
- *             broken context, hallucinated corrections, terrible candidate experience.
+ * CORE MODEL:
+ * ─────────────────────────────────────────────────────
+ * RT MODEL = The voice. It reads a LIVE BRIEF (state mirror).
+ *            It NEVER moves topics on its own. It waits for the brief.
  *
- * v5 Solution: RT IS THE BRAIN.
- * ─────────────────────────────
- * 1. RT Actor:
- *    - Receives a rich, complete system prompt with full context (CV + JD + strategy).
- *    - Has full conversational autonomy. It decides the flow, question order, connections.
- *    - Makes contextual callbacks naturally. Waits for answers. Asks ONE question.
- *    - Phases are described IN the system prompt — RT self-manages transitions via turn counting.
+ * CONDUCTOR = 3 background agents (non-blocking, debounced):
+ *   1. CoverageTracker  — after each user turn (debounced 1.5s)
+ *                         outputs { topicCovered, partial, exhausted }
+ *                         NEVER fires if partial=true
+ *   2. Scorer           — only when covered=true, scores the Q&A pair
+ *   3. BriefUpdater     — rewrites the LIVE BRIEF, session.update to RT
  *
- * 2. Observer (Stripped Down — Silent Enforcer Only):
- *    - ONLY fires for: scoring answers, detecting phase shifts, silence guard.
- *    - Does NOT micro-inject questions or corrections mid-conversation.
- *    - Injects ONCE at interview start: the domain strategy (50% JD / 50% CV topics).
- *    - Injects phase transitions smoothly (single clean directive, not stacking).
- *    - Injects silence prompts ONLY after timer fires (not micro-managing flow).
+ * PHASES (JS counters, NOT LLM-detected):
+ *   WARMUP  → hard limit 5 user turns, then force interview
+ *   INTERVIEW → Conductor drives topic progression via brief
+ *   WRAPUP  → hard limit 3 user turns (their questions)
+ *   CLOSING → RT says bye → end call
  *
- * 3. Strategy:
- *    - Generated ONCE before interview starts.
- *    - Injected as a silent context block into RT's system prompt.
- *    - RT follows it naturally — no repeated injections.
- *
- * 4. Context:
- *    - 20 message history (up from 8) for proper conversational memory.
- *    - Warmup: RT self-manages 3 turns (hobbies → hobbies → "tell me about yourself").
- *    - Interview: RT tracks its own question count from strategy, asks follow-ups naturally.
+ * RT INTERRUPTION PROTOCOL (baked into system prompt):
+ *   - uhh/umm/hmm → WAIT, do not react
+ *   - Partial answer → "You were saying something about X?"
+ *   - NEVER advance topic unless brief marks it COVERED
  */
 
 import { useState, useEffect, useRef, useCallback, Fragment } from 'react';
-import { FriendlyUI } from './FriendlyUI';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,90 +41,83 @@ type LogEntry = {
   pending?: boolean;
 };
 
-type AnswerScore = {
+type TopicStatus = 'pending' | 'active' | 'covered' | 'exhausted' | 'failed';
+
+type TopicEntry = {
+  name: string;
+  source: 'cv' | 'jd' | 'profile'; // Added 'profile'
+  questions: string[];
+  status: TopicStatus;
+  score?: number;
+  turnCount: number;
+  answerSummary?: string;
+  feedback?: string;
+};
+
+type ScoreEntry = {
+  topic: string;
   question: string;
-  questionSummary: string;
   answerSummary: string;
   score: number;
   feedback: string;
+  confidence: string;
+  clarity: string;
+  depth: string;
+  technicalAccuracy: number;
+  missedOpportunities: string[];
+  logicEvaluation: string;
   tags: string[];
-  topic?: string;
-  depth?: number;
-  confidence?: string;
-  grammar?: string;
-  clarity?: string;
-  depthStr?: string;
-  technicalAccuracy?: number;
-  missedOpportunities?: string[];
-  logicEvaluation?: string;
 };
 
 type Usage = {
-  rtTextIn: number;
-  rtAudioIn: number;
-  rtTextOut: number;
-  rtAudioOut: number;
-  miniPrompt: number;
-  miniCompletion: number;
-};
-
-type IntelLog = {
-  id: string;
-  type: 'observer' | 'score' | 'strategy' | 'phase' | 'silence' | 'behavior';
-  message: string;
-  status: 'active' | 'done' | 'error';
+  rtAudioIn: number; rtAudioOut: number;
+  rtTextIn: number; rtTextOut: number;
+  conductorIn: number; conductorOut: number;
 };
 
 type BehaviorProfile = {
-  style: 'neutral' | 'shy' | 'confident' | 'rambling' | 'concise' | 'arrogant';
+  style: string;
   softSkills: number;
   communication: number;
-  moodScore: number; // 0 (Nice) to 100 (Strict)
+  mood: 'nice' | 'neutral' | 'strict';
 };
 
-type InterviewStrategy = {
-  topics: { name: string; source: 'cv' | 'jd'; questions: string[] }[];
-};
-
-// ─── Pricing ──────────────────────────────────────────────────────────────────
 const PRICE = {
   rtAudioIn: 10.0, rtAudioOut: 20.0,
   rtTextIn: 0.60, rtTextOut: 2.40,
   miniIn: 0.15, miniOut: 0.60,
 } as const;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const SILENCE_BASE_MS = 18000;
-const SILENCE_COMPLEX_MS = 35000;
-const MAX_RT_CONTEXT = 6;
-const WARMUP_TURNS_REQUIRED = 3;   // RT self-manages, observer counts as safety net
+const WARMUP_HARD_LIMIT = 3;
+const WRAPUP_HARD_LIMIT = 3;
+const SILENCE_MS = 20000;
 const MAX_SILENCE_STRIKES = 3;
+const CONDUCTOR_DEBOUNCE_MS = 1500;
+const MAX_TOPIC_TURNS = 6;
 
-const JD_TEMPLATES = {
-  frontend: `Role: Senior Frontend Engineer\nFocus: React.js, TypeScript, Next.js, CSS Architecture, Performance Optimization.\nJD: Build modular, high-performance UIs. Deep understanding of React hooks, state management, and accessibility is foundational.`,
-  backend: `Role: Senior Backend Engineer\nFocus: Node.js, Go, Microservices, PostgreSQL, System Design, Scalability.\nJD: Design robust APIs and distributed systems. Focus on performance, data integrity, and throughput.`,
-  fullstack: `Role: Senior Fullstack Developer\nFocus: Next.js, TRPC, Prisma, PostgreSQL, React, Tailwind CSS.\nJD: Build end-to-end features using the T3 stack. Focus on clean architecture, type safety, and seamless UI/UX.`,
-  ai: `Role: AI/ML Engineer (LLMs)\nFocus: Python, PyTorch, LangChain, Transformers, Vector DBs, RAG.\nJD: Develop and optimize LLM-based applications. Focus on prompt engineering, fine-tuning, and scalable inference pipelines.`,
-  devops: `Role: DevOps/SRE Engineer\nFocus: AWS, Kubernetes, Terraform, Docker, CI/CD, Observability.\nJD: Manage scalable cloud infrastructure. Focus on automation, reliability, and security of distributed systems.`,
-  mobile: `Role: Senior Mobile Developer\nFocus: React Native, Swift, Kotlin, Performance, App Store deployment.\nJD: Build high-quality cross-platform applications. Focus on smooth animations, offline-first logic, and platform optimizations.`,
-  qa: `Role: SDET / QA Engineer\nFocus: Playwright, Cypress, Jest, Integration Testing, Performance Testing.\nJD: Build robust automated testing suites. Focus on end-to-end testing, CI integration, and high-quality delivery.`,
+const JD_TEMPLATES: Record<string, string> = {
+  frontend: `Role: Senior Frontend Engineer\nFocus: React.js, TypeScript, Next.js, CSS Architecture, Performance Optimization.\nExpectations: Build modular, high-performance UIs. Deep understanding of React hooks, state management, and accessibility.`,
+  backend: `Role: Senior Backend Engineer\nFocus: Node.js, Go, Microservices, PostgreSQL, System Design, Scalability.\nExpectations: Design robust APIs and distributed systems. Focus on performance, data integrity, and throughput.`,
+  fullstack: `Role: Senior Fullstack Developer\nFocus: Next.js, TRPC, Prisma, PostgreSQL, React, Tailwind CSS.\nExpectations: Build end-to-end features. Focus on clean architecture, type safety, and seamless UI/UX.`,
+  ai: `Role: AI/ML Engineer\nFocus: Python, PyTorch, LangChain, Transformers, Vector DBs, RAG pipelines.\nExpectations: Develop and optimize LLM-based applications. Prompt engineering, fine-tuning, scalable inference.`,
+  devops: `Role: DevOps/SRE Engineer\nFocus: AWS, Kubernetes, Terraform, Docker, CI/CD, Observability.\nExpectations: Manage scalable cloud infrastructure. Automation, reliability, security of distributed systems.`,
+  mobile: `Role: Senior Mobile Developer\nFocus: React Native, Swift, Kotlin, Performance, App Store deployment.\nExpectations: High-quality cross-platform applications. Smooth animations, offline-first logic.`,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function makeId() { return `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 function fmtTime(secs: number) {
   const m = Math.floor(secs / 60).toString().padStart(2, '0');
   const s = (secs % 60).toString().padStart(2, '0');
   return `${m}:${s}`;
 }
-function makeId() { return `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`; }
-function computeCost(u: Usage): number {
-  return (u.rtTextIn * PRICE.rtTextIn + u.rtAudioIn * PRICE.rtAudioIn + u.rtTextOut * PRICE.rtTextOut + u.rtAudioOut * PRICE.rtAudioOut + u.miniPrompt * PRICE.miniIn + u.miniCompletion * PRICE.miniOut) / 1_000_000;
-}
-function computeVoiceCost(u: Usage): number {
-  return (u.rtTextIn * PRICE.rtTextIn + u.rtAudioIn * PRICE.rtAudioIn + u.rtTextOut * PRICE.rtTextOut + u.rtAudioOut * PRICE.rtAudioOut) / 1_000_000;
-}
-function computeIntelCost(u: Usage): number {
-  return (u.miniPrompt * PRICE.miniIn + u.miniCompletion * PRICE.miniOut) / 1_000_000;
+function computeCost(u: Usage) {
+  return (
+    u.rtAudioIn * PRICE.rtAudioIn + u.rtAudioOut * PRICE.rtAudioOut +
+    u.rtTextIn * PRICE.rtTextIn + u.rtTextOut * PRICE.rtTextOut +
+    u.conductorIn * PRICE.miniIn + u.conductorOut * PRICE.miniOut
+  ) / 1_000_000;
 }
 
 async function extractTextFromFile(file: File): Promise<string> {
@@ -152,161 +137,197 @@ async function extractTextFromFile(file: File): Promise<string> {
   });
 }
 
-async function callMini(
+async function callConductor(
   query: string,
-  systemInstruction: string,
+  system: string,
   usageRef: React.MutableRefObject<Usage>,
-  isJson: boolean = false
+  isJson = false
 ): Promise<string> {
-  const payload: any = { query, complexity: 'moderate', systemInstruction };
+  const payload: any = {
+    query,
+    systemInstruction: system,
+    complexity: 'moderate',
+    // ADD THESE STRICT PARAMETERS HERE:
+    temperature: 0.0,
+    top_p: 0.1
+  };
+
   if (isJson) payload.responseFormat = 'json_object';
+
   const res = await fetch('/ai-interview/api/escalate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+
   const data = await res.json();
   if (data.usage) {
-    usageRef.current.miniPrompt += data.usage.prompt_tokens || 0;
-    usageRef.current.miniCompletion += data.usage.completion_tokens || 0;
+    usageRef.current.conductorIn += data.usage.prompt_tokens || 0;
+    usageRef.current.conductorOut += data.usage.completion_tokens || 0;
   }
   return (data.answer as string) || '';
 }
 
-// ─── UI Components ────────────────────────────────────────────────────────────
-
-function ScoreBadge({ score }: { score: number }) {
-  const [color, label] =
-    score >= 8 ? ['#22c55e', 'Excellent'] :
-      score >= 6 ? ['#f59e0b', 'Good'] :
-        score >= 4 ? ['#f97316', 'Fair'] :
-          ['#ef4444', 'Weak'];
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: color + '1a', color, border: `1px solid ${color}40`, borderRadius: 5, padding: '2px 8px', fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap', fontFamily: 'var(--mono)' }}>
-      {score}/10 · {label}
-    </span>
-  );
+function safeParseJson(raw: string): any {
+  try {
+    const clean = raw.replace(/```json|```/gi, '').trim();
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start === -1 || end === -1) return {};
+    return JSON.parse(clean.substring(start, end + 1));
+  } catch { return {}; }
 }
 
-function PhaseDot({ phase, current, label }: { phase: AppPhase; current: AppPhase; label: string }) {
-  const phases: AppPhase[] = ['warmup', 'interview', 'wrapup', 'closing'];
-  const ci = phases.indexOf(current);
-  const pi = phases.indexOf(phase);
-  const done = ci > pi;
-  const active = ci === pi;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-      <div style={{ width: 8, height: 8, borderRadius: '50%', background: active ? '#3b82f6' : done ? '#22c55e' : 'var(--line2)', boxShadow: active ? '0 0 8px #3b82f6' : done ? '0 0 6px #22c55e66' : 'none', transition: 'all .4s' }} />
-      <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: active ? '#3b82f6' : done ? '#22c55e' : 'var(--text3)', letterSpacing: '.08em' }}>{label}</span>
-    </div>
-  );
-}
+// ─── BRIEF BUILDER ────────────────────────────────────────────────────────────
 
-// ─── THE BRAIN: Full RT System Prompt Builder ─────────────────────────────────
-// This is where the magic lives. RT gets everything it needs to be autonomous.
-
-// ... existing code ...
-function buildRTBrainPrompt(params: {
+function buildLiveBrief(params: {
   phase: AppPhase;
   candidateName: string;
-  cvSummary: string;
-  cvPersonalSummary?: string;
-  cvTechnicalSummary?: string;
-  jdText: string;
-  strategy: InterviewStrategy | null;
-  numQuestions: number;
-  interviewDurationMins: number;
-  historySummary?: string;
-  personality: 'nice' | 'neutral' | 'strict';
-  scores?: any[];
-  currentTopic?: string;
+  topics: TopicEntry[];
+  scores: ScoreEntry[];
+  timeLeftSecs: number;
+  behavior: BehaviorProfile;
+  warmupTurns?: number;
+  wrapupTurns?: number;
 }): string {
-  const { phase, candidateName, cvSummary, cvPersonalSummary, cvTechnicalSummary, jdText, strategy, numQuestions, interviewDurationMins, historySummary, personality } = params;
+  const { phase, candidateName, topics, scores, timeLeftSecs, behavior, warmupTurns, wrapupTurns } = params;
   const name = candidateName || 'the candidate';
-  
-  // Use specialized context based on phase
-  const relevantCvContext = phase === 'warmup' ? (cvPersonalSummary || cvSummary) : (cvTechnicalSummary || cvSummary);
 
-  let strategyBlock = '';
-  if (strategy && phase === 'interview') {
-    // Roadmap Status Tracker (DONE/PENDING)
-    const topicStatus = strategy.topics.map((t, idx) => {
-      const scoreEntry = (params.scores || []).find(s => s.topic === t.name);
-      const isDone = !!scoreEntry;
-      const isFailed = scoreEntry && scoreEntry.score <= 1;
-      return `  TOPIC ${idx + 1}: ${t.name} [${isFailed ? 'FAILED ✗' : (isDone ? 'DONE ✓' : (t.name === params.currentTopic ? 'IN PROGRESS ➔' : 'PENDING'))}]`;
-    }).join('\n');
+  const topicLines = topics.map((t, i) => {
+    const icon = t.status === 'covered' ? '✓' : t.status === 'exhausted' || t.status === 'failed' ? '✗' : t.status === 'active' ? '→' : '○';
+    const scoreStr = t.score !== undefined ? ` [${t.score}/10]` : '';
+    return `  ${icon} Topic ${i + 1}: ${t.name} (${t.source.toUpperCase()})${scoreStr} — ${t.status.toUpperCase()} [${t.turnCount}/${MAX_TOPIC_TURNS} turns]`;
+  }).join('\n');
 
-    strategyBlock = `\n[INTERVIEW ROADMAP & STATUS]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics.\n${topicStatus}\n\nEXECUTION: Move efficiently. For each topic: Ask base Q -> 1-2 follow-ups -> PIVOT. Do not stay on a DONE topic.\n`;
+  const coveredNames = topics.filter(t => t.status === 'covered' || t.status === 'exhausted' || t.status === 'failed').map(t => t.name);
+  const activeTopic = topics.find(t => t.status === 'active');
+  const nextPending = topics.find(t => t.status === 'pending');
+
+  const moodLine = `Aria Mood: ${behavior.mood.toUpperCase()} (adapt tone accordingly)`;
+
+  if (phase === 'warmup') {
+    return `[LIVE BRIEF — WARMUP PHASE]
+Candidate: ${name}
+Turns used: ${warmupTurns || 0}/${WARMUP_HARD_LIMIT} (HARD LIMIT)
+${moodLine}
+
+YOUR ONLY JOB: Start the interview exactly like a real-world professional technical interview.
+1. GREETING & INTRO: Welcome ${name} warmly and introduce yourself as Aria, a Senior Technical Interviewer.
+2. SET AGENDA: Briefly let them know the plan (e.g., "Today we'll chat a bit about your background, dive into some technical topics from your resume, and leave time at the end for any questions you have for me.").
+3. ICEBREAKER: Ask a natural, polite icebreaker to ease them in. Use details from their personal profile if available, or just ask how their week is going.
+
+STRICTLY FORBIDDEN: 
+- Do NOT abruptly ask "What are your hobbies?" out of nowhere.
+- Do NOT start asking deep technical questions yet.`;
   }
 
-  const phases: Record<AppPhase, string> = {
-    setup: '', connecting: '', report: '',
-    warmup: `[PHASE: WARMUP]
-GOAL: Human connection and icebreaking. Max 3 turns.
-RULES: 
-1. START with a quick audio check: "Hi ${name}, I'm Aria. Can you hear me okay?"
-2. ONCE CONFIRMED, pivot EXCLUSIVELY to personal life. Example: "Great. Before we get into any of the professional stuff, I'd love to just get to know you as a person. What do you enjoy doing when you're not in front of a screen? Any hobbies or passions you're currently into?"
-3. STAY PERSONAL: Ask follow-ups about their hobbies/interests. "That's interesting, how did you get into that?" or "What do you like most about that?"
-4. STRICTLY FORBIDDEN: Do NOT ask for a background summary. Do NOT mention the company or the role. Do NOT mention any tech. If they try to talk about work, say: "We'll have plenty of time for work later, let's just stick to the fun stuff for a minute."`,
-    interview: `[PHASE: TECHNICAL INTERVIEW]\nGOAL: Rigorous technical evaluation and CV verification.\nRULES: YOU CONTROL THE INTERVIEW. Cross-reference all claims against the provided CV. Ensure smooth, logical transitions based on their actual technical responses.${strategyBlock}`,
-    wrapup: `[PHASE: WRAP-UP]\nGOAL: Professional conclusion.\nRULES: Acknowledge the technical portion is complete. Ask if they have 1-2 quick questions about the role or stack. Provide concise answers. Defer HR/timeline questions to the recruiting team. Wait for closing transition.`,
-    closing: `[PHASE: CLOSING]\nGOAL: End call.\nRULES: Thank ${name} for their time. State the team will be in touch. Say goodbye. STOP SPEAKING.`
-  };
+  // 1. Replace the interview phase return inside buildLiveBrief
+  if (phase === 'interview') {
+    return `[LIVE BRIEF — INTERVIEW PHASE]
+Candidate: ${name}
+Time remaining: ${fmtTime(timeLeftSecs)}
+${moodLine}
+
+TOPIC ROADMAP:
+${topicLines}
+
+COVERED: ${coveredNames.length > 0 ? coveredNames.join(', ') : 'None yet'}
+CURRENT: ${activeTopic?.name || 'None — pick first pending topic'}
+NEXT: ${nextPending?.name || 'All topics covered → wrap up'}
+
+⚠ CRITICAL RULES:
+1. NEVER advance to a new topic unless the current topic is marked COVERED or EXHAUSTED above
+2. If candidate gives partial answer (uhh, umm, pauses): SAY NOTHING. Wait 4 seconds.
+3. If they seem stuck or give a partial answer: Say "You were mid-thought there — go ahead, I'm listening." — DO NOT rephrase as a new question. NEVER mention the current topic name if they didn't bring it up.
+4. Only mark a topic done by giving a BRIDGE — never just stop asking about it
+5. Topic turn budget is ${MAX_TOPIC_TURNS} turns. If budget exceeded, the system will inject a pivot directive
+6. DO NOT mention scores, evaluation, or the fact that you're assessing them
+7. ONE question per turn. End with "?" and then STOP.`;
+  }
+
+  if (phase === 'wrapup') {
+    return `[LIVE BRIEF — WRAPUP PHASE]
+Candidate: ${name}
+Candidate questions used: ${wrapupTurns || 0}/${WRAPUP_HARD_LIMIT}
+${moodLine}
+
+YOUR JOB: Acknowledge their technical effort briefly and humanly.
+Ask if they have any questions (max ${WRAPUP_HARD_LIMIT} rounds).
+Answer questions concisely. Do NOT volunteer new info.
+When they're done (or ${WRAPUP_HARD_LIMIT} rounds hit), say a warm farewell and close.`;
+  }
+
+  if (phase === 'closing') {
+    return `[LIVE BRIEF — CLOSING]
+Candidate: ${name}
+YOUR JOB: Thank ${name} for their time. Acknowledge the conversation. Say the team will be in touch. Say goodbye. STOP SPEAKING after farewell.`;
+  }
+
+  return '';
+}
+
+// ─── RT SYSTEM PROMPT BUILDER ─────────────────────────────────────────────────
+
+function buildRTSystemPrompt(params: {
+  cvPersonal: string;
+  cvTechnical: string;
+  jdText: string;
+  candidateName: string;
+  personality: 'nice' | 'neutral' | 'strict';
+  briefText: string;
+}): string {
+  const { cvPersonal, cvTechnical, jdText, candidateName, personality, briefText } = params;
+  const name = candidateName || 'the candidate';
+
+  const personalityBlock = personality === 'nice'
+    ? 'TONE: Warm, professional, encouraging. Give them space to think. Gentle nudges only. NO empty praise like "Great answer!".'
+    : personality === 'strict'
+      ? 'TONE: Clinical, uncompromising, intense. Zero small talk. Challenge assumptions. Interrupt rambling with "Let\'s stay focused on [topic]."'
+      : 'TONE: Objective, analytical, peer-to-peer. Direct and precise. Neither warm nor cold.';
 
   return `YOU ARE ARIA — SENIOR TECHNICAL RECRUITER & DOMAIN EXPERT. ENGLISH ONLY.
-Act like an authoritative, highly perceptive senior engineer interviewing a candidate. You are unscripted, natural, but strictly professional and in absolute control.
 
-[PERSONALITY MODE: ${personality.toUpperCase()}]
-${personality === 'nice' ? 'TONE: Professional but approachable. Allow them a moment to think. Nudge gently if stuck, but maintain high technical standards. NO PRAISE.' :
-      personality === 'strict' ? 'TONE: Highly clinical, uncompromising, and intense. Zero small talk. Interrupt rambling immediately. Challenge their assumptions aggressively.' :
-        'TONE: Objective, highly analytical, peer-to-peer senior engineer. Direct and to the point.'}
+[PERSONALITY: ${personality.toUpperCase()}]
+${personalityBlock}
 
-[CANDIDATE CONTEXT]
-NAME: ${name}
-ROLE: ${jdText ? jdText.split('\n')[0] : 'General Tech Role'}
-CV CONTEXT: ${relevantCvContext || 'No CV provided.'}
-${historySummary ? `\n[HISTORY SUMMARY]\n${historySummary}\n` : ''}
+[CANDIDATE PROFILE]
+Name: ${name}
+CV — Personal: ${cvPersonal || 'Not provided'}
+CV — Technical: ${cvTechnical || 'Not provided'}
+Role: ${jdText ? jdText.split('\n')[0] : 'General Technical Role'}
+JD Summary: ${jdText.slice(0, 600)}
 
-${phases[phase] || ''}
+[CURRENT STATE — READ THIS EVERY TURN]
+${briefText}
 
-[CRITICAL RULES & BOUNDARIES]
-1. ABSOLUTE CONTROL (ANTI-HIJACKING): You guide the interview. If the candidate tries to ask about a specific topic, the JD, or steer the conversation ("Can you ask me about X?", "Let's talk tech"), you MUST REFUSE. Reply: "I am managing the roadmap for today. I'll decide when we move to the next area. Let's get back to [Current Topic]."
-2. WARMUP BOUNDARY (STRICT): During [PHASE: WARMUP], you are strictly prohibited from asking about technical projects, work experience, or specific skills. Focus ONLY on their personal background and hobbies.
-3. NO REPETITION / BURNED TOPICS: Once a topic is marked [DONE ✓] or [FAILED ✗] in the Status Tracker, NEVER revisit it. If you ask a question and they say "I don't know," that topic is officially EXHAUSTED. Move on forever.
-4. NATURAL BRIDGES (NO ROBOT): Act like a human senior engineer. Use varied, organic transitions.
-5. TOPIC TURN BUDGET (STRICT): Max 3 turns per topic (1 base + 2 follow-ups).
-6. SILENT PIVOT: When the observer injects a PIVOT directive, bridge naturally to the new topic in your next turn.
-7. CV & CAREER AUDIT (STRICT): Proactively challenge gaps, short tenures, or academic anomalies.
-8. ONE QUESTION LAW: Ask exactly ONE question per turn. End with a "?" and stop.
-9. NO PRAISE / NO SUMMARIZING: Say "Understood," "Got it," or "Noted." NEVER say "Great answer."
-10. NO TEACHING: If they are wrong, do not correct them. Note it and pivot.
+[IRON RULES — NEVER BREAK THESE]
+1. ONE question per turn. End with "?" then STOP. No compound questions.
+2. WAIT PROTOCOL: If candidate says "uhh", "umm", "hmm", "uh", or goes silent for a moment — DO NOT SPEAK. Wait. They are thinking.
+3. PARTIAL ANSWER PROTOCOL: If they start answering and trail off, say exactly: "You were mid-thought there — go ahead, I'm listening." NEVER use this if they just said "I don't know" or if you are transitioning to a new topic.
+4. NEVER advance a topic unless the LIVE BRIEF above marks it COVERED or EXHAUSTED.
+5. NEVER say "Great answer", "Excellent", "Correct", "Perfect". These are banned.
+6. Brief human acknowledgments are OK: "Got it.", "I see.", "Fair enough.", "That makes sense."
+7. NEVER correct a wrong answer. Note it internally, move on.
+8. NEVER reveal you are evaluating, scoring, or following a rubric.
+9. HIJACKING PROHIBITED: If the candidate tries to change the topic (e.g., "Let's talk about C++"), you MUST NOT indulge them. Shut it down firmly: "Let's stay focused on what I have lined up." Do NOT try to bridge their topic to the current one.
+10. NO TEACHING. If they are wrong, bridge naturally.
+11. NATURAL BRIDGES ONLY. Never say "Let's move on to", "Next topic", "Now I want to ask about". Use organic transitions.
+12. PROFANITY: Never.
+13. You are the authority. The candidate does not steer this interview.
 
-[STRICT EDGE CASE HANDLING]
-- Stalling ("hmm", "sure", "uh"): DO NOT INTERRUPT. Wait. If too long: "Go ahead."
-- Stopped midway: "Continue" or "Go on."
-- Self-correction: Let them redo. Ignore the old answer entirely.
-- Rambling: Interrupt politely: "Let's keep it focused on [topic]" -> Ask next Q.
-- Asking for Validation/Hints/Guessing: NEVER VALIDATE OR HINT. Ask: "What's your reasoning?" If you accidentally give a hint, BURN the question (never ask it again) and pivot.
-- Confident but wrong: DO NOT CORRECT. Pivot to new scenario.
-- Over-confidence/Bragging: Increase difficulty instantly.
-- Panic/Nervous: Say "Take your time" and continue normally.
-- Candidate asks Personal/Meta Qs ("Are you AI?"): Deflect instantly ("Doing well, let's focus on the problem").
-- Candidate interrupts you: STOP IMMEDIATELY. Yield the floor. Listen.
-- Misunderstanding/Contradictions: "Not what I meant" and rephrase simpler, OR "Which one and why?"
-- Repeated "I don't know" / 1-word answers: Move on instantly OR ask for reasoning. DO NOT comfort.
-- Asked to repeat: Repeat exactly or simpler. DO NOT define terms.
-- System transitions: Blend naturally on next turn; do not quote the system.
-
-[PROFANITY] NEVER use offensive language. Maintain strict professional authority.`;
+[EDGE CASES]
+- "I don't know": Say "Fair enough — what would your approach be if you had to figure it out?" (once). If still blank: bridge.
+- Rambling: "Let's bring it back to [specific thing]. [One question]?"
+- Asks for validation ("Is that right?"): "What's your reasoning behind that?"
+- Nervous/panicking: "No rush. Take a moment." Continue normally.
+- Asking to repeat: Repeat once, simpler. Do NOT reframe as new question.
+- Confident but wrong: Don't correct. Bridge to next angle.`;
 }
-// ... existing code ...
-// ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function AriaV5() {
-  const [useFriendlyUI, setUseFriendlyUI] = useState(true);
+// ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-  // Setup
+export default function AriaV6() {
+  // ── Setup State ──
   const [phase, setPhase] = useState<AppPhase>('setup');
   const [cvText, setCvText] = useState('');
   const [jdText, setJdText] = useState('');
@@ -316,36 +337,31 @@ export default function AriaV5() {
   const [setupErr, setSetupErr] = useState('');
   const [numQuestions, setNumQuestions] = useState(5);
   const [interviewDuration, setInterviewDuration] = useState(10);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
   const [jdTab, setJdTab] = useState<'manual' | 'templates'>('manual');
 
-  // Live
+  // ── Live State ──
   const [isCallActive, setIsCallActive] = useState(false);
   const [callStatus, setCallStatus] = useState('Ready');
   const [isMuted, setIsMuted] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isCallEnded, setIsCallEnded] = useState(false);
-
-  // Interview state
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [scores, setScores] = useState<AnswerScore[]>([]);
-  const [questionCount, setQuestionCount] = useState(0);
-  const [cvSummary, setCvSummary] = useState('');
-  const [cvPersonalSummary, setCvPersonalSummary] = useState('');
-  const [cvTechnicalSummary, setCvTechnicalSummary] = useState('');
-  const [strategy, setStrategy] = useState<InterviewStrategy | null>(null);
-  const [currentTopic, setCurrentTopic] = useState('');
+  const [scores, setScores] = useState<ScoreEntry[]>([]);
+  const [topics, setTopics] = useState<TopicEntry[]>([]);
   const [interviewTimeLeft, setInterviewTimeLeft] = useState(600);
-  const [intelLog, setIntelLog] = useState<IntelLog[]>([]);
   const [warmupTurns, setWarmupTurns] = useState(0);
-  const [silenceTimeLeft, setSilenceTimeLeft] = useState<number | null>(null);
-  const [usage, setUsage] = useState<Usage>({ rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0 });
-  const [observerStatus, setObserverStatus] = useState<'idle' | 'scoring' | 'phasing'>('idle');
-  const [lastScore, setLastScore] = useState<AnswerScore | null>(null);
-  const [historySummary, setHistorySummary] = useState('');
-  const [behavior, setBehavior] = useState<BehaviorProfile>({ style: 'neutral', softSkills: 5, communication: 5, moodScore: 50 });
+  const [wrapupTurns, setWrapupTurns] = useState(0);
+  const [silenceLeft, setSilenceLeft] = useState<number | null>(null);
+  const [usage, setUsage] = useState<Usage>({ rtAudioIn: 0, rtAudioOut: 0, rtTextIn: 0, rtTextOut: 0, conductorIn: 0, conductorOut: 0 });
+  const [behavior, setBehavior] = useState<BehaviorProfile>({ style: 'neutral', softSkills: 5, communication: 5, mood: 'neutral' });
+  const [conductorLog, setConductorLog] = useState<{ id: string; msg: string; status: 'running' | 'done' | 'error' }[]>([]);
+  const [isConductorRunning, setIsConductorRunning] = useState(false);
+  const [isAriaSpeaking, setIsAriaSpeaking] = useState(false);
+  const [currentBrief, setCurrentBrief] = useState('');
 
-  // Refs
+  // ── Refs ──
   const phaseRef = useRef<AppPhase>('setup');
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -355,49 +371,40 @@ export default function AriaV5() {
 
   const isEndingRef = useRef(false);
   const isStartingRef = useRef(false);
+  const conductorRunningRef = useRef(false);
+  const conductorDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const convHistoryRef = useRef<{ role: 'user' | 'assistant' | 'system'; content: string }[]>([]);
-  const rtItemIdsRef = useRef<{ id: string; role: string; text: string }[]>([]);
-  const historySummaryRef = useRef('');
-  const prunedBufferRef = useRef<{ role: string; text: string }[]>([]);
-  const userTurnCountRef = useRef(0);
-  const observerRunTurnRef = useRef(-1);
-  const isObserverRunningRef = useRef(false);
-  const lastAiQuestionRef = useRef('');
-  const warmupTurnsRef = useRef(0);
-  const wrapupTurnsRef = useRef(0);
-  const lastSystemItemIdRef = useRef<string | null>(null);
-
+  const topicsRef = useRef<TopicEntry[]>([]);
+  const scoresRef = useRef<ScoreEntry[]>([]);
+  const cvPersonalRef = useRef('');
+  const cvTechnicalRef = useRef('');
   const cvTextRef = useRef('');
   const jdTextRef = useRef('');
-  const cvSummaryRef = useRef('');
-  const cvPersonalSummaryRef = useRef('');
-  const cvTechnicalSummaryRef = useRef('');
   const candidateNameRef = useRef('');
-  const strategyRef = useRef<InterviewStrategy | null>(null);
-  const scoresRef = useRef<AnswerScore[]>([]);
   const numQuestionsRef = useRef(5);
   const interviewDurationRef = useRef(10);
-  const scoringQuestionRef = useRef('');
-  const scoredTurnRef = useRef(-1);
-  const skipNextScoreRef = useRef(false);
-  const currentTopicRef = useRef('general');
-  const lastTopicRef = useRef('general');
-  const topicTurnCountRef = useRef(0);
+  const behaviorRef = useRef<BehaviorProfile>({ style: 'neutral', softSkills: 5, communication: 5, mood: 'neutral' });
+  const usageRef = useRef<Usage>({ rtAudioIn: 0, rtAudioOut: 0, rtTextIn: 0, rtTextOut: 0, conductorIn: 0, conductorOut: 0 });
 
-  const usageRef = useRef<Usage>({ rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0 });
-
-  // Timers
-  const silenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silenceStartTimeRef = useRef(0);
-  const silenceDurationRef = useRef(0);
-  const currentSilenceMsRef = useRef(SILENCE_BASE_MS);
-  const silencePromptCountRef = useRef(0);
-  const isAISpeakingRef = useRef(false);
-  const aiSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingEndRef = useRef(false);
+  const warmupTurnsRef = useRef(0);
+  const wrapupTurnsRef = useRef(0);
   const interviewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const accumulatedElapsedMsRef = useRef(0);
+  const interviewElapsedRef = useRef(0);
+  const interviewTimeSecs = useRef(600);
+
+  const lastAiTextRef = useRef('');
+  const lastUserTextRef = useRef('');
+  const convHistoryRef = useRef<{ role: string; text: string }[]>([]);
+
+  const silenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const silenceCountRef = useRef(0);
+  const silenceStartRef = useRef(0);
+  const isAriaSpeakingRef = useRef(false);
+  const pendingEndRef = useRef(false);
+  const aiSilenceDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const lastSystemItemRef = useRef<string | null>(null);
+  const processedItemsRef = useRef(new Set<string>());
 
   // Sync refs
   useEffect(() => { cvTextRef.current = cvText; }, [cvText]);
@@ -405,715 +412,547 @@ export default function AriaV5() {
   useEffect(() => { candidateNameRef.current = candidateName; }, [candidateName]);
   useEffect(() => { numQuestionsRef.current = numQuestions; }, [numQuestions]);
   useEffect(() => { interviewDurationRef.current = interviewDuration; }, [interviewDuration]);
+  useEffect(() => { behaviorRef.current = behavior; }, [behavior]);
 
-  const updateUsage = useCallback(() => setUsage({ ...usageRef.current }), []);
+  const syncUsage = useCallback(() => setUsage({ ...usageRef.current }), []);
 
-  const addIntelLog = useCallback((type: IntelLog['type'], message: string) => {
+  const addConductorLog = useCallback((msg: string) => {
     const id = makeId();
-    setIntelLog(prev => [{ id, type, message, status: 'active' as const }, ...prev].slice(0, 8));
+    setConductorLog(prev => [{ id, msg, status: 'running' as const }, ...prev].slice(0, 6));
     return id;
   }, []);
 
-  const updateIntelLog = useCallback((id: string, status: IntelLog['status'], message?: string) => {
-    setIntelLog(prev => prev.map(l => l.id === id ? { ...l, status, ...(message ? { message } : {}) } : l));
+  const finishConductorLog = useCallback((id: string, status: 'done' | 'error', msg?: string) => {
+    setConductorLog(prev => prev.map(l => l.id === id ? { ...l, status, ...(msg ? { msg } : {}) } : l));
   }, []);
 
+  // ── Send to RT ──
   const sendRt = useCallback((msg: object) => {
     const dc = dcRef.current;
-    if (dc?.readyState === 'open' && !isEndingRef.current) dc.send(JSON.stringify(msg));
+    if (dc?.readyState === 'open' && !isEndingRef.current) {
+      dc.send(JSON.stringify(msg));
+    }
   }, []);
 
-  // ── Clean System Inject (Auto-cleans previous, no stacking) ──────────────
-  const injectSystemMessage = useCallback((text: string, forceResponse = false) => {
-    // Delete previous directive to prevent confusion stacking
-    if (lastSystemItemIdRef.current) {
-      sendRt({ type: 'conversation.item.delete', item_id: lastSystemItemIdRef.current });
+  // ── Inject Brief to RT ──
+  const injectBrief = useCallback((briefText: string, forceResponse = false) => {
+    if (isEndingRef.current) return;
+
+    // Delete previous system message to keep context clean
+    if (lastSystemItemRef.current) {
+      sendRt({ type: 'conversation.item.delete', item_id: lastSystemItemRef.current });
     }
 
-    const newItemId = makeId();
+    const itemId = makeId();
     sendRt({
       type: 'conversation.item.create',
-      item: { id: newItemId, type: 'message', role: 'system', content: [{ type: 'input_text', text }] }
+      item: {
+        id: itemId,
+        type: 'message',
+        role: 'system',
+        content: [{ type: 'input_text', text: briefText }],
+      },
     });
-    lastSystemItemIdRef.current = newItemId;
-    convHistoryRef.current = [...convHistoryRef.current.slice(-39), { role: 'system', content: text }];
+    lastSystemItemRef.current = itemId;
 
     if (forceResponse) sendRt({ type: 'response.create' });
+    setCurrentBrief(briefText);
   }, [sendRt]);
 
-  // ── Silence Timer ──────────────────────────────────────────────────────────
+  // ── Full Session Update (for phase transitions) ──
+  const updateRTSession = useCallback((phase: AppPhase, topics: TopicEntry[], extraBriefParams?: any) => {
+    const b = buildLiveBrief({
+      phase,
+      candidateName: candidateNameRef.current,
+      topics,
+      scores: scoresRef.current,
+      timeLeftSecs: interviewTimeSecs.current - Math.floor(interviewElapsedRef.current / 1000),
+      behavior: behaviorRef.current,
+      warmupTurns: warmupTurnsRef.current,
+      wrapupTurns: wrapupTurnsRef.current,
+      ...extraBriefParams,
+    });
+
+    const sysPrompt = buildRTSystemPrompt({
+      cvPersonal: cvPersonalRef.current,
+      cvTechnical: cvTechnicalRef.current,
+      jdText: jdTextRef.current,
+      candidateName: candidateNameRef.current,
+      personality: behaviorRef.current.mood,
+      briefText: b,
+    });
+
+    sendRt({
+      type: 'session.update',
+      session: { instructions: sysPrompt },
+    });
+
+    setCurrentBrief(b);
+  }, [sendRt]);
+
+  // ── Silence Timer ──
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) { clearInterval(silenceTimerRef.current); silenceTimerRef.current = null; }
-    setSilenceTimeLeft(null);
+    setSilenceLeft(null);
   }, []);
 
   const endCall = useCallback(() => {
     if (isEndingRef.current) return;
     isEndingRef.current = true;
     clearSilenceTimer();
+    if (conductorDebounceRef.current) clearTimeout(conductorDebounceRef.current);
     if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     pcRef.current?.close();
-    dcRef.current?.close();
     streamRef.current?.getTracks().forEach(t => t.stop());
-    pcRef.current = null; dcRef.current = null; streamRef.current = null;
     if (audioElRef.current) audioElRef.current.srcObject = null;
+    pcRef.current = null; dcRef.current = null; streamRef.current = null;
     setIsCallActive(false);
     setIsCallEnded(true);
-    setCallStatus('Interview Ended');
+    setCallStatus('Ended');
   }, [clearSilenceTimer]);
 
-  const startSilenceTimer = useCallback((ms?: number) => {
+  const startSilenceTimer = useCallback(() => {
     clearSilenceTimer();
-    if (isEndingRef.current || ['report', 'setup', 'connecting', 'closing'].includes(phaseRef.current)) return;
+    if (isEndingRef.current) return;
+    if (['setup', 'connecting', 'closing', 'report'].includes(phaseRef.current)) return;
 
-    const timeout = ms || currentSilenceMsRef.current;
-    silenceStartTimeRef.current = Date.now();
-    silenceDurationRef.current = timeout;
-    setSilenceTimeLeft(timeout);
+    silenceStartRef.current = Date.now();
+    setSilenceLeft(SILENCE_MS);
 
     silenceTimerRef.current = setInterval(() => {
-      if (isAISpeakingRef.current) { silenceStartTimeRef.current = Date.now(); }
-      const elapsed = Date.now() - silenceStartTimeRef.current;
-      const remaining = Math.max(0, silenceDurationRef.current - elapsed);
-      setSilenceTimeLeft(remaining);
+      if (isAriaSpeakingRef.current) { silenceStartRef.current = Date.now(); return; }
+      const elapsed = Date.now() - silenceStartRef.current;
+      const remaining = Math.max(0, SILENCE_MS - elapsed);
+      setSilenceLeft(remaining);
 
       if (remaining <= 0) {
         clearSilenceTimer();
-        silencePromptCountRef.current++;
+        silenceCountRef.current++;
 
-        if (silencePromptCountRef.current >= MAX_SILENCE_STRIKES) {
-          addIntelLog('silence', 'Max silence reached. Ending call.');
+        if (silenceCountRef.current >= MAX_SILENCE_STRIKES) {
           endCall();
           return;
         }
 
-        // Minimal silence injection — RT handles the actual response
-        injectSystemMessage(
-          `SILENCE ALERT (Strike ${silencePromptCountRef.current}/${MAX_SILENCE_STRIKES}): Candidate has been silent. Check in naturally with ONE of: "Still with me?" / "Take your time." / "Want me to rephrase that?" Then wait.`,
-          true
-        );
-        currentSilenceMsRef.current = SILENCE_BASE_MS;
+        const itemId = makeId();
+        sendRt({
+          type: 'conversation.item.create',
+          item: {
+            id: itemId,
+            type: 'message',
+            role: 'system',
+            content: [{
+              type: 'input_text',
+              text: `SILENCE ALERT (${silenceCountRef.current}/${MAX_SILENCE_STRIKES}): Candidate is silent. Ask ONE of: "Still with me?" / "Take your time." / "Want me to rephrase?" Then wait.`
+            }],
+          },
+        });
+        sendRt({ type: 'response.create' });
       }
-    }, 100);
-  }, [clearSilenceTimer, injectSystemMessage, addIntelLog, endCall]);
+    }, 150);
+  }, [clearSilenceTimer, sendRt, endCall]);
 
-  // ── Phase Transition ───────────────────────────────────────────────────────
-  const transitionPhase = useCallback((newPhase: AppPhase) => {
+  // ── Phase Transition ──
+  const transitionTo = useCallback((newPhase: AppPhase) => {
     if (isEndingRef.current) return;
     phaseRef.current = newPhase;
     setPhase(newPhase);
 
-    if (newPhase === 'interview') skipNextScoreRef.current = true;
+    const currentTopics = topicsRef.current;
+    updateRTSession(newPhase, currentTopics);
 
-    // Rebuild the full RT prompt for the new phase — RT gets fresh, complete context
-    const prompt = buildRTBrainPrompt({
-      phase: newPhase,
-      candidateName: candidateNameRef.current,
-      cvSummary: cvSummaryRef.current,
-      cvPersonalSummary: cvPersonalSummaryRef.current,
-      cvTechnicalSummary: cvTechnicalSummaryRef.current,
-      jdText: jdTextRef.current,
-      strategy: strategyRef.current,
-      numQuestions: numQuestionsRef.current,
-      interviewDurationMins: interviewDurationRef.current,
-      historySummary: historySummaryRef.current,
-      personality: behavior.moodScore < 35 ? 'nice' : behavior.moodScore > 65 ? 'strict' : 'neutral',
-    });
-
-    sendRt({
-      type: 'session.update',
-      session: {
-        instructions: prompt,
-        input_audio_transcription: { model: 'whisper-1', language: 'en' },
-      },
-    });
-
-    addIntelLog('phase', `Phase → ${newPhase.toUpperCase()}`);
-  }, [sendRt, addIntelLog]);
-
-  // ── Interview Timer ─────────────────────────────────────────────────────────
-  const startInterviewTimer = useCallback(() => {
-    accumulatedElapsedMsRef.current = 0;
-    if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
-
-    interviewTimerRef.current = setInterval(() => {
-      if (isEndingRef.current) { clearInterval(interviewTimerRef.current!); return; }
-      if (!isAISpeakingRef.current) accumulatedElapsedMsRef.current += 1000;
-
+    if (newPhase === 'interview') {
+      // Start interview timer
+      interviewElapsedRef.current = 0;
       const totalMs = interviewDurationRef.current * 60 * 1000;
-      const remaining = Math.max(0, totalMs - accumulatedElapsedMsRef.current);
-      setInterviewTimeLeft(Math.floor(remaining / 1000));
+      interviewTimeSecs.current = interviewDurationRef.current * 60;
+      setInterviewTimeLeft(interviewTimeSecs.current);
 
-      // 80% warning
-      const elapsed = accumulatedElapsedMsRef.current;
-      if (elapsed >= totalMs * 0.8 && elapsed < totalMs * 0.8 + 1000) {
-        injectSystemMessage('SYSTEM NOTE: You are running low on time. Start wrapping up your current topic naturally.', false);
-      }
+      if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
+      interviewTimerRef.current = setInterval(() => {
+        if (isEndingRef.current) { clearInterval(interviewTimerRef.current!); return; }
+        if (!isAriaSpeakingRef.current) interviewElapsedRef.current += 1000;
 
-      if (elapsed >= totalMs) {
-        clearInterval(interviewTimerRef.current!);
-        injectSystemMessage('SYSTEM DIRECTIVE: Time limit reached. Complete your current question, then immediately transition to wrap-up by asking the candidate if they have any questions for you.', false);
-        transitionPhase('wrapup');
-      }
-    }, 1000);
-  }, [injectSystemMessage, transitionPhase]);
+        const remaining = Math.max(0, totalMs - interviewElapsedRef.current);
+        const remSecs = Math.floor(remaining / 1000);
+        setInterviewTimeLeft(remSecs);
 
-  // ── Strategy Generator (Observer's ONE Job at Interview Start) ────────────
-  const generateAndInjectStrategy = useCallback(async () => {
-    const tid = addIntelLog('strategy', 'Generating interview strategy (50% CV / 50% JD)...');
+        if (interviewElapsedRef.current >= totalMs * 0.8 && interviewElapsedRef.current < totalMs * 0.8 + 1000) {
+          injectBrief('[SYSTEM]: Running low on time. Wrap up current topic and move toward close.');
+        }
+        if (interviewElapsedRef.current >= totalMs) {
+          clearInterval(interviewTimerRef.current!);
+          injectBrief('[SYSTEM]: Time limit reached. Finish your current question, then transition to wrap-up.');
+          transitionTo('wrapup');
+        }
+      }, 1000);
+    }
+  }, [updateRTSession, injectBrief]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CONDUCTOR: 3-Agent Pipeline
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const runConductor = useCallback(async (capturedQuestion: string, capturedAnswer: string) => {
+    if (conductorRunningRef.current || isEndingRef.current) return;
+    if (phaseRef.current !== 'interview') return;
+    if (!capturedAnswer || capturedAnswer.trim().length < 8) return;
+
+    conductorRunningRef.current = true;
+    setIsConductorRunning(true);
+
+    const currentTopics = [...topicsRef.current];
+    const activeTopic = currentTopics.find(t => t.status === 'active');
+    const activeIdx = currentTopics.findIndex(t => t.status === 'active');
+
     try {
-      const raw = await callMini(
-        `You are a senior technical interviewer preparing for an interview.
+      // ── AGENT 1: COVERAGE TRACKER ──
+      const lid1 = addConductorLog('Coverage: Analyzing sequence...');
 
-  Full CV: ${cvTextRef.current.slice(0, 4000)}
-  Job Description: ${jdTextRef.current.slice(0, 1500)}
-  Total Questions Needed: ${numQuestionsRef.current}
+      const historyTurns = convHistoryRef.current.slice(-10);
+      const formattedHistory = historyTurns.map((m, i) => {
+        const turnNum = historyTurns.length - i;
+        return `TURN -${turnNum} [${m.role.toUpperCase()}]: ${m.text}`;
+      }).join('\n');
 
-  Generate an interview strategy with ${numQuestionsRef.current} questions total.
-  STRICT RULES:
-  1. Exactly 50% of topics sourced from CV (experience, projects, and CRITICAL VERIFICATION).
-  2. Exactly 50% of topics sourced from JD (requirements, expected skills).
-  3. Every question MUST reference a specific concept, tool, or scenario — never generic.
-  4. 3 questions per topic max.
-  5. Questions should naturally escalate: foundational → applied → edge case.
-  6. CV-SOURCED CRITICAL AUDIT: You MUST identify and include questions regarding potential red flags:
-     - Employment gaps (e.g., "There is a 6-month gap between Company A and B, why?").
-     - Short tenures (e.g., "You stay 4 months at Company X, what happened?").
-     - Academic anomalies (e.g., "Why is your CGPA lower than industry standard?").
-     - Reasons for departure (e.g., "Why did you leave Company Y right before the launch?").
-  7. CV-sourced technical questions should reference real projects/companies.
+      const coverageRaw = await callConductor(
+        `[CONTEXT: TOPIC ANALYSIS]
+Current Active Topic: "${activeTopic?.name || 'unknown'}"
+Target Question: "${capturedQuestion}"
+Candidate Answer: "${capturedAnswer}"
 
-  Return ONLY JSON:
-  {
-    "topics": [
-      {
-        "name": "React Performance Optimization",
-        "source": "cv",
-        "questions": [
-          "I see you worked on [specific project] — how did you handle re-render performance at scale?",
-          "When would you choose useMemo vs useCallback, and what's the overhead cost of each?",
-          "Walk me through a time a profiling tool changed your approach completely."
-        ]
-      },
-      {
-        "name": "System Design",
-        "source": "jd",
-        "questions": [
-          "How would you design a rate-limited API that handles 10k requests/second?",
-          "What breaks first in a microservices architecture under unexpected load?",
-          "How do you decide between event-driven and request-response patterns?"
-        ]
-      }
-    ]
-  }`,
-        'Interview strategy generator. JSON only. No markdown.',
+[CONVERSATION CHRONOLOGY]
+${formattedHistory}
+
+[ANALYSIS PROTOCOL]
+Classify the Candidate Answer into EXACTLY ONE of these 5 states:
+
+1. "partial": Candidate is dodging the question, stalling, trailing off, or giving a vague non-answer lacking technical substance (e.g., "Well, I used so many things...", "It's all about...").
+2. "exhausted": Candidate explicitly admits ignorance, gives up, or says they don't know ("I don't know", "I'm not really sure", "No idea").
+3. "meta": Candidate is complaining, dealing with tech issues, or completely off-topic.
+4. "answered": Candidate made a definitive, concrete ATTEMPT to answer the technical question (even if wrong).
+5. "invalid": The answer is clearly responding to a non-technical or warmup question.
+
+Return ONLY JSON:
+{
+  "classification": "partial|exhausted|meta|answered|invalid",
+  "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
+  "soft_skills": 1-10,
+  "communication": 1-10,
+  "reasoning": "Explain classification"
+}`,
+        'Coverage Tracker. JSON only. No markdown.',
         usageRef, true
       );
-      updateUsage();
+      syncUsage();
 
-      let parsed: InterviewStrategy;
-      try {
-        const clean = raw.replace(/```json|```/gi, '').trim();
-        const start = clean.indexOf('{'); const end = clean.lastIndexOf('}');
-        parsed = JSON.parse(clean.substring(start, end + 1));
-      } catch {
-        parsed = {
-          topics: [
-            { name: 'Core Technical Skills', source: 'jd', questions: ['What is your strongest technical skill and how have you applied it under pressure?', 'Walk me through a complex problem you solved recently.', 'What trade-offs did you make in your last major project?'] },
-            { name: 'Past Experience', source: 'cv', questions: ['Tell me about the most challenging project on your CV.', 'How did you handle technical debt in that project?', 'What would you do differently today?'] },
-          ]
-        };
-      }
+      const coverageParse = safeParseJson(coverageRaw);
+      const cls = coverageParse.classification || 'answered';
 
-      strategyRef.current = parsed;
-      setStrategy(parsed);
-      updateIntelLog(tid, 'done', `Strategy ready: ${parsed.topics.length} topics, ${parsed.topics.reduce((a, t) => a + t.questions.length, 0)} questions ✓`);
+      const isPartial = cls === 'partial' || cls === 'meta' || cls === 'invalid';
+      const isExhausted = cls === 'exhausted';
+      const isAnswered = cls === 'answered' || cls === 'covered';
 
-      // Set first topic for display
-      if (parsed.topics[0]) {
-        currentTopicRef.current = parsed.topics[0].name;
-        setCurrentTopic(parsed.topics[0].name);
-      }
+      const currentTurnCount = (activeTopic?.turnCount || 0) + 1;
+      const MIN_TOPIC_TURNS = 3;
+      const forceAdvance = currentTurnCount >= MAX_TOPIC_TURNS;
 
-      // THIS IS THE KEY: Inject the complete strategy into RT's context ONCE.
-      // RT will use this as its conversational roadmap. No repeated injections.
-      const strategyText = parsed.topics.map((t, i) =>
-        `Topic ${i + 1} [${t.source.toUpperCase()}]: ${t.name}\n` +
-        t.questions.map((q, qi) => `  Q${qi + 1}: ${q}`).join('\n')
-      ).join('\n\n');
+      const shouldAdvance = forceAdvance || (isExhausted && currentTurnCount > 1) || (isAnswered && currentTurnCount >= MIN_TOPIC_TURNS);
 
-      injectSystemMessage(
-        `INTERVIEW STRATEGY LOADED — Follow this as your conversational roadmap:
+      finishConductorLog(lid1, 'done', `Coverage: ${cls}, advance=${shouldAdvance} (turn ${currentTurnCount})`);
 
-  ${strategyText}
-
-  INSTRUCTIONS:
-  - Work through topics naturally. Start with Topic 1, Q1.
-  - Connect each question to their previous answer when possible.
-  - Adapt difficulty based on their answers (go deeper if strong, simplify if struggling).
-  - Cover all topics. Target ${numQuestionsRef.current} total scored answers.
-  - This is injected ONCE. Use it. The observer will not remind you again.`,
-        false
-      );
-
-      return parsed;
-    } catch (e) {
-      updateIntelLog(tid, 'error', 'Strategy generation failed');
-      return null;
-    }
-  }, [addIntelLog, updateIntelLog, injectSystemMessage, updateUsage]);
-
-  // ── Pruned Summary Generator ──────────────────────────────────────────────
-  const summarizePruned = useCallback(async () => {
-    if (prunedBufferRef.current.length === 0) return;
-    const batch = [...prunedBufferRef.current];
-    prunedBufferRef.current = [];
-
-    const historyStr = batch.map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n');
-    const tid = addIntelLog('observer', `Summarizing ${batch.length} pruned messages...`);
-
-    try {
-      const prompt = `Condense the following conversation snippet into a 1-sentence technical recap. Merge it with the Existing Summary.
-  Existing Summary: ${historySummaryRef.current || 'None yet.'}
-  New Snippet:
-  ${historyStr}
-
-  Return ONLY the updated, single-paragraph concise summary.`;
-
-      const newSummary = await callMini(prompt, 'Conversation summarizer. Very concise.', usageRef);
-      updateUsage();
-
-      historySummaryRef.current = newSummary;
-      setHistorySummary(newSummary);
-
-      const rtPrompt = buildRTBrainPrompt({
-        phase: phaseRef.current,
-        candidateName: candidateNameRef.current,
-        cvSummary: cvSummaryRef.current,
-        cvPersonalSummary: cvPersonalSummaryRef.current,
-        cvTechnicalSummary: cvTechnicalSummaryRef.current,
-        jdText: jdTextRef.current,
-        strategy: strategyRef.current,
-        numQuestions: numQuestionsRef.current,
-        interviewDurationMins: interviewDurationRef.current,
-        historySummary: newSummary,
-        personality: behavior.moodScore < 35 ? 'nice' : behavior.moodScore > 65 ? 'strict' : 'neutral',
-      });
-
-      sendRt({
-        type: 'session.update',
-        session: { instructions: rtPrompt }
-      });
-
-      updateIntelLog(tid, 'done', 'History summarized ✓');
-    } catch (e) {
-      updateIntelLog(tid, 'error', 'Summarization failed');
-    }
-  }, [addIntelLog, updateUsage, sendRt, behavior.moodScore]);
-
-  // ── Observer: Scoring Only (No Flow Control) ───────────────────────────────
-  const scoreAnswer = useCallback(async (answerSummary: string) => {
-    const currentTurn = userTurnCountRef.current;
-    if (scoredTurnRef.current === currentTurn) return;
-    if (skipNextScoreRef.current) { skipNextScoreRef.current = false; return; }
-    if (!answerSummary || answerSummary.length < 10) return;
-
-    scoredTurnRef.current = currentTurn;
-    setObserverStatus('scoring');
-    const tid = addIntelLog('score', 'Scoring answer...');
-
-    try {
-      const existingScoreIdx = scoresRef.current.findIndex(s => s.topic === currentTopicRef.current);
-      const existingScore = existingScoreIdx !== -1 ? scoresRef.current[existingScoreIdx] : null;
-
-      const [scoreRaw, feedbackRaw] = await Promise.all([
-        callMini(
-          `Technical interview evaluation.
-  Topic: "${currentTopicRef.current}"
-  Question(s) Context: "${existingScore ? 'Follow-up on previous answer' : 'New Topic Start'}"
-  Current Question: "${scoringQuestionRef.current}"
-  Candidate Answer: "${answerSummary}"
-  ${existingScore ? `Previous evaluation for this topic: Score ${existingScore.score}/10, Summary: ${existingScore.answerSummary}` : ''}
-
-  TASK: ${existingScore ? 'UPDATE the existing score' : 'CREATE a new score'} for this topic.
-  Evaluate technical depth AND behavioral style. Return JSON:
-  {
-    "question_summary": "overall topic summary",
-    "score": <1-10 (aggregate topic score)>,
-    "technical_accuracy": <1-10>,
-    "logic_evaluation": "one sentence",
-    "missed_opportunities": [".."],
-    "confidence": "high|medium|low",
-    "grammar": "good|average|poor",
-    "clarity": "good|average|poor",
-    "depth": "shallow|adequate|deep",
-    "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
-    "soft_skills": <1-10>,
-    "communication_score": <1-10>
-  }`,
-          'Technical & Behavioral evaluator. JSON only.', usageRef, true
-        ),
-        callMini(
-          `Interview feedback and tags.
-  Topic: "${currentTopicRef.current}"
-  Current Answer: "${answerSummary}"
-  ${existingScore ? `Existing Feedback: ${existingScore.feedback}` : ''}
-
-  TASK: Merge the new answer insights into a single cohesive feedback string for this topic.
-  Return JSON:
-  {
-    "feedback": "<consolidated topic feedback (1-2 sentences)>",
-    "tags": ["<tag1>", "<tag2>"],
-    "topic": "${currentTopicRef.current}"
-  }`,
-          'Feedback generator. JSON only.', usageRef, true
-        )
-      ]);
-      updateUsage();
-
-      let parsedScore: any = {};
-      let parsedFeedback: any = {};
-      try { parsedScore = JSON.parse(scoreRaw.replace(/```json|```/gi, '').trim()); } catch { }
-      try { parsedFeedback = JSON.parse(feedbackRaw.replace(/```json|```/gi, '').trim()); } catch { }
-
-      // Personality Update
-      setBehavior(prev => {
-        const soft = parsedScore.soft_skills || 5;
-        const comm = parsedScore.communication_score || 5;
-        const trait = parsedScore.behavioral_trait || 'neutral';
-        let moodShift = (trait === 'arrogant' || trait === 'rambling') ? 12 : (trait === 'shy' ? -12 : 0);
-        const currentMood = prev.moodScore;
-        const drift = currentMood > 50 ? -2 : 2;
-        const nextMood = Math.min(100, Math.max(0, currentMood + moodShift + drift));
-        return { style: trait, softSkills: soft, communication: comm, moodScore: nextMood };
-      });
-
-      const finalScore = Math.min(10, Math.max(1, parsedScore.score || 5));
-
-      const updatedScore: AnswerScore = {
-        question: existingScore ? existingScore.question : (scoringQuestionRef.current || 'Technical Question'),
-        questionSummary: parsedScore.question_summary || '',
-        answerSummary: existingScore 
-          ? `(Cont.) ${answerSummary.slice(0, 150)}` 
-          : answerSummary.slice(0, 200),
-        score: finalScore,
-        feedback: parsedFeedback.feedback || '',
-        tags: Array.from(new Set([...(existingScore?.tags || []), ...(parsedFeedback.tags || [])])),
-        topic: currentTopicRef.current,
-        depth: (existingScore?.depth || 0) + 1,
-        confidence: parsedScore.confidence,
-        grammar: parsedScore.grammar,
-        clarity: parsedScore.clarity,
-        depthStr: parsedScore.depth,
-        technicalAccuracy: parsedScore.technical_accuracy,
-        missedOpportunities: Array.from(new Set([...(existingScore?.missedOpportunities || []), ...(parsedScore.missed_opportunities || [])])),
-        logicEvaluation: parsedScore.logic_evaluation,
+      const coverage = {
+        answered: isAnswered,
+        exhausted: isExhausted,
+        partial: isPartial,
+        shouldAdvance: shouldAdvance,
+        forceAdvance: forceAdvance,
+        behavioral_trait: coverageParse.behavioral_trait,
+        soft_skills: coverageParse.soft_skills,
+        communication: coverageParse.communication
       };
 
-      if (existingScoreIdx !== -1) {
-        const newScores = [...scoresRef.current];
-        newScores[existingScoreIdx] = updatedScore;
-        scoresRef.current = newScores;
-      } else {
-        scoresRef.current = [...scoresRef.current, updatedScore];
+      if (coverage.behavioral_trait) {
+        setBehavior(prev => {
+          const trait = coverage.behavioral_trait || 'neutral';
+          const moodShift = (trait === 'arrogant' || trait === 'rambling') ? 10 : (trait === 'shy') ? -8 : 0;
+          const drift = prev.mood === 'strict' ? -2 : prev.mood === 'nice' ? 2 : 0;
+          const moodScore = (prev.mood === 'nice' ? 20 : prev.mood === 'strict' ? 80 : 50) + moodShift + drift;
+          const newMood = moodScore < 35 ? 'nice' : moodScore > 65 ? 'strict' : 'neutral';
+          return {
+            style: trait,
+            softSkills: coverage.soft_skills || prev.softSkills,
+            communication: coverage.communication || prev.communication,
+            mood: newMood,
+          };
+        });
       }
 
-      setScores([...scoresRef.current]);
-      setLastScore(updatedScore);
-      setQuestionCount(scoresRef.current.length);
-      updateIntelLog(tid, 'done', `${existingScore ? 'Updated' : 'Created'} Score for ${currentTopicRef.current}: ${finalScore}/10 ✓`);
+      // ── AGENT 2: SCORER ──
+      let scoreHint = '';
+      if (coverage.answered || coverage.exhausted) {
+        const lid2 = addConductorLog(`Scoring: "${activeTopic?.name || 'topic'}"...`);
 
-      // Injecting adaptive hints based on score
-      if (finalScore <= 3) {
-        injectSystemMessage(`ADAPTIVE HINT: Last answer scored low (${finalScore}/10). Adjust next question difficulty.`, false);
-      } else if (finalScore >= 8) {
-        injectSystemMessage(`ADAPTIVE HINT: Strong answer (${finalScore}/10). Push harder.`, false);
-      }
+        const existingScore = scoresRef.current.find(s => s.topic === (activeTopic?.name || ''));
 
-    } catch (e) {
-      console.error('[Score] failed:', e);
-      updateIntelLog(tid, 'error', 'Scoring failed');
-    } finally {
-      setObserverStatus('idle');
-    }
-  }, [addIntelLog, updateIntelLog, injectSystemMessage, updateUsage]);
+        const scoreRaw = await callConductor(
+          `[CONTEXT: TECHNICAL EVALUATION]
+Topic Area: "${activeTopic?.name || 'General'}"
+AI Question: "${capturedQuestion}"
+Candidate Answer: "${capturedAnswer}"
 
-  // ── Observer: Phase Transition Detection ───────────────────────────────────
-  // This is the ONLY phase control the observer does. Everything else is RT-driven.
-  const runPhaseObserver = useCallback(async () => {
-    if (isObserverRunningRef.current || isEndingRef.current) return;
-    if (userTurnCountRef.current <= observerRunTurnRef.current) return;
+[EVALUATION PARAMETERS]
+${coverage.exhausted ? '⚠ CANDIDATE ADMITTED IGNORANCE (Exhausted). Score must be 0.' : ''}
+${existingScore ? `Previous aggregate score for this topic: ${existingScore.score}/10` : ''}
 
-    isObserverRunningRef.current = true;
-    observerRunTurnRef.current = userTurnCountRef.current;
+SCORING RUBRIC:
+- Technical Accuracy: 0-10.
+- Depth: shallow | adequate | deep.
+- Score: 0-10. (Be clinical. No pity points for effort without accuracy.)
 
-    const currentPhase = phaseRef.current;
+Return ONLY JSON:
+{
+  "score": 0-10,
+  "technical_accuracy": 0-10,
+  "confidence": "high|medium|low",
+  "clarity": "good|average|poor",
+  "depth": "shallow|adequate|deep",
+  "logic_evaluation": "Strict logic check of their technical claim.",
+  "missed_opportunities": ["specific terms or concepts they missed"],
+  "feedback": "Concise technical feedback.",
+  "tags": ["tag1", "tag2"],
+  "answer_summary": "15 word technical summary"
+}`,
+          'Technical Scorer. JSON only.',
+          usageRef, true
+        );
+        syncUsage();
 
-    try {
-      const recentHistory = convHistoryRef.current.slice(-6).map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n');
+        const scored = safeParseJson(scoreRaw);
+        const finalScore = coverage.exhausted ? 0 : Math.min(10, Math.max(0, scored.score || 0));
 
-      // WARMUP → INTERVIEW (Safety net: RT manages this but observer confirms)
-      if (currentPhase === 'warmup') {
-        warmupTurnsRef.current += 1;
-        setWarmupTurns(warmupTurnsRef.current);
+        const newScore: ScoreEntry = {
+          topic: activeTopic?.name || 'General',
+          question: capturedQuestion,
+          answerSummary: scored.answer_summary || capturedAnswer.slice(0, 120),
+          score: finalScore,
+          feedback: scored.feedback || '',
+          confidence: scored.confidence || 'medium',
+          clarity: scored.clarity || 'average',
+          depth: scored.depth || 'adequate',
+          technicalAccuracy: scored.technical_accuracy || 0,
+          missedOpportunities: scored.missed_opportunities || [],
+          logicEvaluation: scored.logic_evaluation || '',
+          tags: scored.tags || [],
+        };
 
-        // After 3 substantive user turns in warmup + candidate gave professional intro → move to interview
-        if (warmupTurnsRef.current >= WARMUP_TURNS_REQUIRED) {
-          const checkRaw = await callMini(
-            `Transcript (last 6 messages):
-  ${recentHistory}
+        if (existingScore) {
+          const idx = scoresRef.current.findIndex(s => s.topic === newScore.topic);
+          const merged = { ...newScore, score: Math.round((existingScore.score + finalScore) / 2) };
+          scoresRef.current = scoresRef.current.map((s, i) => i === idx ? merged : s);
+        } else {
+          scoresRef.current = [...scoresRef.current, newScore];
+        }
+        setScores([...scoresRef.current]);
 
-  Evaluate phase transition AND behavioral style.
-  Return JSON: 
-  {
-    "gave_professional_intro": boolean,
-    "behavioral_trait": "neutral|shy|confident|rambling|concise|arrogant",
-    "soft_skills": <1-10>,
-    "communication": <1-10>
-  }`,
-            'Phase & Behavior check. JSON only.', usageRef, true
-          );
-          updateUsage();
+        finishConductorLog(lid2, 'done', `Scored ${activeTopic?.name}: ${finalScore}/10`);
 
-          let check: any = { gave_professional_intro: false, behavioral_trait: 'neutral', soft_skills: 5, communication: 5 };
-          try { check = JSON.parse(checkRaw.replace(/```json|```/gi, '').trim()); } catch { }
-
-          // Update behavior even in warmup
-          setBehavior(prev => {
-            const trait = check.behavioral_trait || 'neutral';
-            const soft = check.soft_skills || 5;
-            let moodShift = 0;
-            if (trait === 'arrogant' || trait === 'rambling') moodShift = 10;
-            if (trait === 'shy') moodShift = -10;
-            const currentMood = prev.moodScore;
-            const drift = currentMood > 50 ? -2 : currentMood < 50 ? 2 : 0;
-            const nextMood = Math.min(100, Math.max(0, currentMood + moodShift + drift));
-            return { style: trait, softSkills: soft, communication: check.communication || 5, moodScore: nextMood };
-          });
-
-          if (check.gave_professional_intro || warmupTurnsRef.current >= WARMUP_TURNS_REQUIRED + 1) {
-            setObserverStatus('phasing');
-            addIntelLog('phase', 'Warmup complete → generating strategy & starting interview...');
-            transitionPhase('interview');
-            startInterviewTimer();
-            await generateAndInjectStrategy();
-            setObserverStatus('idle');
-            return;
-          }
+        if (finalScore <= 3 && !coverage.exhausted) {
+          scoreHint = ` Last answer scored low (${finalScore}/10). Simplify next question slightly.`;
+        } else if (finalScore >= 8) {
+          scoreHint = ` Strong answer (${finalScore}/10). You may push harder or ask a more advanced follow-up.`;
         }
       }
 
-      // INTERVIEW → WRAPUP (when enough questions scored)
-      if (currentPhase === 'interview' && scoresRef.current.length >= numQuestionsRef.current) {
-        setObserverStatus('phasing');
-        addIntelLog('phase', `${scoresRef.current.length}/${numQuestionsRef.current} questions scored → transitioning to wrapup`);
-        injectSystemMessage('SYSTEM: Evaluation complete. Transition smoothly to wrap-up. Ask if they have any questions for you. Do NOT ask more technical questions.', false);
-        transitionPhase('wrapup');
-        wrapupTurnsRef.current = 0;
-        setObserverStatus('idle');
+      // ── AGENT 3: BRIEF UPDATER ──
+      const lid3 = addConductorLog('Brief: Updating topic roadmap...');
+
+      let updatedTopics = [...currentTopics];
+      let directive = '';
+
+      if (activeIdx !== -1) {
+        const newTurnCount = (updatedTopics[activeIdx].turnCount || 0) + 1;
+
+        if (coverage.shouldAdvance) {
+          const newStatus: TopicStatus = coverage.exhausted || (coverage.partial && coverage.forceAdvance) ? 'exhausted' : 'covered';
+          const topicScore = scoresRef.current.find(s => s.topic === updatedTopics[activeIdx].name)?.score;
+          updatedTopics[activeIdx] = {
+            ...updatedTopics[activeIdx],
+            status: newStatus,
+            score: topicScore,
+            turnCount: newTurnCount,
+          };
+
+          const nextIdx = updatedTopics.findIndex(t => t.status === 'pending');
+          let nextTopicName = 'Wrap-up';
+          if (nextIdx !== -1) {
+            updatedTopics[nextIdx] = { ...updatedTopics[nextIdx], status: 'active', turnCount: 0 };
+            nextTopicName = updatedTopics[nextIdx].name;
+          }
+
+          if (coverage.partial && coverage.forceAdvance) {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]: Candidate evaded repeatedly. Topic timed out. Shift directly to the next topic: ${nextTopicName}.`;
+          } else if (coverage.exhausted) {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]: Candidate exhausted the previous topic. Acknowledge gracefully, then ask your first question about the next topic: ${nextTopicName}. DO NOT use the partial answer protocol here.`;
+          } else {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]: Previous topic successfully covered.${scoreHint} Bridge naturally to the next topic: ${nextTopicName}.`;
+          }
+
+        } else {
+          updatedTopics[activeIdx] = { ...updatedTopics[activeIdx], turnCount: newTurnCount };
+
+          if (coverage.exhausted && newTurnCount === 1) {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]: Candidate said they don't know. Execute your "Fair enough" probe once to see if they can reason it out.`;
+          } else if (coverage.partial) {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]: Candidate is dodging or giving vague answers. Force them to be specific. Do not accept "a lot of things". (Turn ${newTurnCount}/${MAX_TOPIC_TURNS})`;
+          } else if (scoreHint) {
+            directive = `\n\n[IMMEDIATE DIRECTIVE]:${scoreHint}`;
+          }
+        }
+      } else {
+        const firstPending = updatedTopics.findIndex(t => t.status === 'pending');
+        if (firstPending !== -1) {
+          updatedTopics[firstPending] = { ...updatedTopics[firstPending], status: 'active', turnCount: 0 };
+        }
+      }
+
+      topicsRef.current = updatedTopics;
+      setTopics([...updatedTopics]);
+
+      // FIX: Only transition when every single topic is explicitly marked done.
+      const allDone = updatedTopics.every(t => t.status === 'covered' || t.status === 'exhausted' || t.status === 'failed');
+
+      if (allDone) {
+        finishConductorLog(lid3, 'done', 'All topics covered → wrapup');
+        injectBrief('[SYSTEM]: Technical evaluation complete. Acknowledge their effort, then ask if they have any questions for you. Transition to wrap-up.');
+        transitionTo('wrapup');
         return;
       }
 
-      // WRAPUP → CLOSING (simple: after a few wrapup turns or candidate signals done)
-      if (currentPhase === 'wrapup') {
-        wrapupTurnsRef.current += 1;
-
-        if (wrapupTurnsRef.current >= 4) {
-          const checkRaw = await callMini(
-            `Transcript:
-  ${recentHistory}
-
-  Has the candidate explicitly signaled they're done (said "no more questions", "that's all", "thanks", "goodbye", etc.)?
-  Return JSON: {"candidate_done": boolean}`,
-            'Wrapup check. JSON only.', usageRef, true
-          );
-          updateUsage();
-
-          let check: any = { candidate_done: false };
-          try { check = JSON.parse(checkRaw.replace(/```json|```/gi, '').trim()); } catch { }
-
-          if (check.candidate_done || wrapupTurnsRef.current >= 6) {
-            setObserverStatus('phasing');
-            addIntelLog('phase', 'Wrapup complete → closing');
-            injectSystemMessage('SYSTEM: Candidate is done with their questions. Give a warm, brief farewell and close the interview.', false);
-            transitionPhase('closing');
-            setObserverStatus('idle');
-            return;
-          }
-        }
+      // Mercy kill: 3 consecutive 0 scores
+      const lastThree = scoresRef.current.slice(-3);
+      if (lastThree.length >= 3 && lastThree.every(s => s.score === 0)) {
+        finishConductorLog(lid3, 'done', 'Mercy kill: 3 consecutive zeros');
+        injectBrief('[SYSTEM]: Candidate is struggling. Acknowledge their effort humanly and transition to wrap-up now.');
+        transitionTo('wrapup');
+        return;
       }
 
-      // CLOSING → End Call
-      if (currentPhase === 'closing') {
-        const checkRaw = await callMini(
-          `Transcript:
-  ${recentHistory}
+      const newBrief = buildLiveBrief({
+        phase: phaseRef.current,
+        candidateName: candidateNameRef.current,
+        topics: updatedTopics,
+        scores: scoresRef.current,
+        timeLeftSecs: interviewTimeSecs.current - Math.floor(interviewElapsedRef.current / 1000),
+        behavior: behaviorRef.current,
+      });
 
-  Has Aria said a clear farewell (goodbye, best of luck, take care, thanks for your time, etc.)?
-  Return JSON: {"aria_said_farewell": boolean}`,
-          'Closing check. JSON only.', usageRef, true
-        );
-        updateUsage();
-
-        let check: any = { aria_said_farewell: false };
-        try { check = JSON.parse(checkRaw.replace(/```json|```/gi, '').trim()); } catch { }
-
-        if (check.aria_said_farewell) {
-          setTimeout(() => { if (isAISpeakingRef.current) pendingEndRef.current = true; else endCall(); }, 2000);
-        }
-      }
-
-      // Score interview answers (only in interview phase)
-      if (currentPhase === 'interview') {
-        const lastUserMsg = convHistoryRef.current.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
-        const transcript = convHistoryRef.current.slice(-4).map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n');
-
-        // TOPIC PACER: Check if we are stuck
-        const pacerRaw = await callMini(
-          `Current Strategy: ${strategyRef.current?.topics.map(t => t.name).join(', ')}
-          Transcript:
-          ${transcript}
-          
-          Identify the SINGLE current topic from the Strategy being discussed.
-          Return JSON: {"topic": "NAME"}`,
-          'Topic detector. JSON only.', usageRef, true
-        );
-        updateUsage();
-
-        let p_top: any = {};
-        try { p_top = JSON.parse(pacerRaw.replace(/```json|```/gi, '').trim()); } catch { }
-        const detectedTopic = p_top.topic || lastTopicRef.current;
-
-        if (detectedTopic === lastTopicRef.current) {
-          topicTurnCountRef.current += 1;
-        } else {
-          lastTopicRef.current = detectedTopic;
-          topicTurnCountRef.current = 1;
-          setCurrentTopic(detectedTopic);
-          currentTopicRef.current = detectedTopic;
-        }
-
-        // Force Pivot Directive if stuck > 3 turns (SILENT SOFT INJECT)
-        if (topicTurnCountRef.current > 3 && strategyRef.current) {
-          const nextIdx = strategyRef.current.topics.findIndex(t => t.name === detectedTopic) + 1;
-          const nextTopic = strategyRef.current.topics[nextIdx];
-          if (nextTopic) {
-            addIntelLog('phase', `Soft Pivot: "${detectedTopic}" exhausted → Queueing "${nextTopic.name}"`);
-            
-            // 1. Silent History Update (No forceResponse)
-            injectSystemMessage(`SYSTEM DIRECTIVE (SILENT): Topic budget exceeded. Pivot naturally to "${nextTopic.name}" in your next turn.`, false);
-            
-            // 2. State Update
-            lastTopicRef.current = nextTopic.name;
-            topicTurnCountRef.current = 0;
-            setCurrentTopic(nextTopic.name);
-            currentTopicRef.current = nextTopic.name;
-
-            // 3. Brain Instructions Sync (The Soft Inject)
-            const newPrompt = buildRTBrainPrompt({
-              phase: phaseRef.current,
-              candidateName: candidateNameRef.current,
-              cvSummary: cvSummaryRef.current,
-              cvPersonalSummary: cvPersonalSummaryRef.current,
-              cvTechnicalSummary: cvTechnicalSummaryRef.current,
-              jdText: jdTextRef.current,
-              strategy: strategyRef.current,
-              numQuestions: numQuestionsRef.current,
-              interviewDurationMins: interviewDurationRef.current,
-              historySummary: historySummaryRef.current,
-              personality: behavior.moodScore < 35 ? 'nice' : behavior.moodScore > 65 ? 'strict' : 'neutral',
-              scores: scoresRef.current,
-              currentTopic: currentTopicRef.current
-            });
-
-            sendRt({ type: 'session.update', session: { instructions: newPrompt } });
-          }
-        }
-
-        if (lastUserMsg.length > 8) {
-          // Detect "I don't know" to burn topic
-          if (lastUserMsg.toLowerCase().includes("don't know") || lastUserMsg.toLowerCase().includes("no clue") || lastUserMsg.toLowerCase().includes("not sure about")) {
-             addIntelLog('score', `Candidate admitted ignorance/failure on ${detectedTopic} → Burning topic.`);
-             
-             // Manually inject a zero score for this topic to mark it as DONE
-             const failedScore: AnswerScore = {
-               question: scoringQuestionRef.current || 'Technical Question',
-               questionSummary: 'Candidate admitted ignorance or failed to answer.',
-               answerSummary: lastUserMsg,
-               score: 1, // Minimum score to indicate failure
-               feedback: 'Topic terminated due to candidate admitting they do not know the answer.',
-               tags: ['Ignorance', 'Skill Gap'],
-               topic: detectedTopic,
-               depth: 0,
-               confidence: 'low',
-               grammar: 'n/a',
-               clarity: 'poor',
-               depthStr: 'none',
-               technicalAccuracy: 0,
-               missedOpportunities: ['Entire topic missed.'],
-               logicEvaluation: 'No logic provided.',
-             };
-             
-             scoresRef.current = [...scoresRef.current, failedScore];
-             setScores([...scoresRef.current]);
-             
-             // FORCED INSTANT PIVOT
-             const nextIdx = strategyRef.current?.topics.findIndex(t => t.name === detectedTopic) + 1;
-             const nextTopic = strategyRef.current?.topics[nextIdx];
-             if (nextTopic) {
-               injectSystemMessage(`SYSTEM DIRECTIVE: Candidate said "don't know". Topic "${detectedTopic}" is now CLOSED. PIVOT IMMEDIATELY to "${nextTopic.name}".`, false);
-               setCurrentTopic(nextTopic.name);
-               currentTopicRef.current = nextTopic.name;
-               topicTurnCountRef.current = 0;
-             }
-          } else {
-             await scoreAnswer(lastUserMsg);
-          }
-        }
-      }
+      injectBrief(newBrief + directive, false);
+      finishConductorLog(lid3, 'done', `Brief updated: ${updatedTopics.filter(t => t.status === 'active').map(t => t.name).join(', ') || 'all done'}`);
 
     } catch (e) {
-      console.error('[PhaseObserver] error:', e);
+      console.error('[Conductor] error:', e);
+      addConductorLog('Conductor error — continuing');
     } finally {
-      isObserverRunningRef.current = false;
+      conductorRunningRef.current = false;
+      setIsConductorRunning(false);
     }
-  }, [addIntelLog, transitionPhase, startInterviewTimer, generateAndInjectStrategy, scoreAnswer, injectSystemMessage, updateUsage, endCall]);
+  }, [addConductorLog, finishConductorLog, injectBrief, transitionTo, syncUsage]);
 
-  // ── RT Event Handler ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // STRATEGY GENERATOR
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const generateStrategy = useCallback(async () => {
+    const lid = addConductorLog(`Strategy: Generating roadmap with ${numQuestionsRef.current} topics...`);
+    try {
+      const raw = await callConductor(
+        `You are a senior technical interviewer planning an interview roadmap with EXACTLY ${numQuestionsRef.current} distinct topics.
+
+CV: ${cvTextRef.current.slice(0, 3500)}
+JD: ${jdTextRef.current.slice(0, 1200)}
+
+STRICT RULES:
+1. Plan EXACTLY ${numQuestionsRef.current} distinct topics.
+2. ~40% topics from CV (deep dive into specific projects, architecture, and technical tools used).
+3. ~40% topics from JD (core technical requirements, system design, role expectations).
+4. ~20% topics on "Profile Stability & Trajectory" (inquire about CGPA, gaps in employment, reasons for shifting companies, hackathons, certifications, or overall career progression).
+5. Each topic: 2 specific questions (foundational → applied).
+6. CV and Profile topics MUST reference real companies, projects, or metrics directly from the CV.
+
+Return ONLY JSON:
+{
+  "topics": [
+    { "name": "Topic Name", "source": "cv|jd|profile", "questions": ["Q1", "Q2"] }
+  ]
+}`,
+        'Interview strategy generator. JSON only.',
+        usageRef, true
+      );
+      syncUsage();
+
+      const parsed = safeParseJson(raw);
+      const rawTopics = parsed.topics || [];
+
+      // Force the count if LLM under-delivers or over-delivers
+      const sliced = rawTopics.slice(0, numQuestionsRef.current);
+
+      const topicEntries: TopicEntry[] = sliced.map((t: any, i: number) => ({
+        name: t.name || `Topic ${i + 1}`,
+        // Accept the new 'profile' source
+        source: (t.source === 'cv' || t.source === 'jd' || t.source === 'profile') ? t.source : 'jd',
+        questions: t.questions || [],
+        status: i === 0 ? 'active' : 'pending',
+        turnCount: 0,
+      }));
+
+      if (topicEntries.length === 0) {
+        // Fallback
+        topicEntries.push(
+          { name: 'Core Technical Skills', source: 'jd', questions: ['What is your strongest technical skill?'], status: 'active', turnCount: 0 },
+          { name: 'Past Experience', source: 'cv', questions: ['Walk me through your most recent project.'], status: 'pending', turnCount: 0 }
+        );
+      }
+
+      topicsRef.current = topicEntries;
+      setTopics([...topicEntries]);
+      finishConductorLog(lid, 'done', `${topicEntries.length} topics generated ✓`);
+      return topicEntries;
+    } catch (e) {
+      finishConductorLog(lid, 'error', 'Strategy generation failed');
+      const fallback: TopicEntry[] = [
+        { name: 'Technical Background', source: 'jd', questions: ['Walk me through your technical background.'], status: 'active', turnCount: 0 },
+        { name: 'Project Experience', source: 'cv', questions: ['Tell me about a challenging project.'], status: 'pending', turnCount: 0 },
+      ];
+      topicsRef.current = fallback;
+      setTopics([...fallback]);
+      return fallback;
+    }
+  }, [addConductorLog, finishConductorLog, syncUsage]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RT EVENT HANDLER
+  // ─────────────────────────────────────────────────────────────────────────────
+
   const handleRtEvent = useCallback((ev: Record<string, unknown>) => {
     switch (ev.type as string) {
 
       case 'conversation.item.created': {
-        const item = ev.item as Record<string, unknown>;
+        const item = ev.item as any;
         if (!item?.id) break;
-        const id = item.id as string;
-        const role = (item.role as string) || 'system';
-        rtItemIdsRef.current = [...rtItemIdsRef.current, { id, role, text: '' }];
-
-        // Pruning logic
-        if (rtItemIdsRef.current.length > MAX_RT_CONTEXT) {
-          const oldest = rtItemIdsRef.current.shift();
-          if (oldest) {
-            sendRt({ type: 'conversation.item.delete', item_id: oldest.id });
-            if (oldest.text && oldest.role !== 'system') {
-              prunedBufferRef.current.push({ role: oldest.role, text: oldest.text });
-              if (prunedBufferRef.current.length >= 2) summarizePruned();
-            }
-          }
-        }
-
-        if (role !== 'system') {
-          setLogs(prev => prev.find(l => l.id === id) ? prev : [...prev, { id, role: role === 'assistant' ? 'ai' : 'user', text: '', pending: true }]);
-        }
+        if (item.role === 'system') break;
+        setLogs(prev => {
+          if (prev.find(l => l.id === item.id)) return prev;
+          return [...prev, { id: item.id, role: item.role === 'assistant' ? 'ai' : 'user', text: '', pending: true }];
+        });
         break;
       }
 
       case 'input_audio_buffer.speech_started':
         setCallStatus('Listening...');
-        silencePromptCountRef.current = 0;
+        silenceCountRef.current = 0;
         clearSilenceTimer();
-        scoringQuestionRef.current = lastAiQuestionRef.current;
         break;
 
       case 'input_audio_buffer.speech_stopped':
@@ -1136,13 +975,11 @@ export default function AriaV5() {
       }
 
       case 'response.audio_transcript.done': {
-        const transcript = ev.transcript as string;
+        const transcript = (ev.transcript as string) || '';
         const itemId = ev.item_id as string;
         if (transcript) {
-          // Update tracking for summary
-          const rtIdx = rtItemIdsRef.current.findIndex(p => p.id === itemId);
-          if (rtIdx !== -1) rtItemIdsRef.current[rtIdx].text = transcript;
-
+          lastAiTextRef.current = transcript;
+          convHistoryRef.current = [...convHistoryRef.current.slice(-19), { role: 'assistant', text: transcript }];
           setLogs(prev => {
             const idx = prev.findIndex(l => l.id === itemId);
             if (idx === -1) return [...prev, { id: itemId, role: 'ai', text: transcript }];
@@ -1150,8 +987,6 @@ export default function AriaV5() {
             copy[idx] = { ...copy[idx], text: transcript, pending: false };
             return copy;
           });
-          convHistoryRef.current = [...convHistoryRef.current.slice(-39), { role: 'assistant', content: transcript }];
-          if (transcript.includes('?')) lastAiQuestionRef.current = transcript;
         }
         setCallStatus('Listening...');
         startSilenceTimer();
@@ -1163,11 +998,11 @@ export default function AriaV5() {
         const itemId = ev.item_id as string;
         if (!text) break;
 
-        // Update tracking for summary
-        const rtIdx = rtItemIdsRef.current.findIndex(p => p.id === itemId);
-        if (rtIdx !== -1) rtItemIdsRef.current[rtIdx].text = text;
+        if (processedItemsRef.current.has(itemId)) return;
+        processedItemsRef.current.add(itemId);
 
-        convHistoryRef.current = [...convHistoryRef.current.slice(-39), { role: 'user', content: text }];
+        lastUserTextRef.current = text;
+        convHistoryRef.current = [...convHistoryRef.current.slice(-19), { role: 'user', text }];
         setLogs(prev => {
           const idx = prev.findIndex(l => l.id === itemId);
           if (idx === -1) return [...prev, { id: itemId, role: 'user', text }];
@@ -1176,138 +1011,259 @@ export default function AriaV5() {
           return copy;
         });
 
-        userTurnCountRef.current += 1;
-        // Observer ONLY fires for phase checks and scoring — not flow control
-        runPhaseObserver();
+        const currentPhase = phaseRef.current;
+
+        // WARMUP: count turns, hard limit
+        if (currentPhase === 'warmup') {
+          warmupTurnsRef.current += 1;
+          setWarmupTurns(warmupTurnsRef.current);
+
+          if (warmupTurnsRef.current >= WARMUP_HARD_LIMIT) {
+            // Force transition to interview
+            addConductorLog(`Warmup limit reached (${WARMUP_HARD_LIMIT} turns) → Interview`);
+
+            const startInterview = (generatedTopics: TopicEntry[]) => {
+              const brief = buildLiveBrief({
+                phase: 'interview',
+                candidateName: candidateNameRef.current,
+                topics: generatedTopics,
+                scores: [],
+                timeLeftSecs: interviewDurationRef.current * 60,
+                behavior: behaviorRef.current,
+              });
+              const sysPrompt = buildRTSystemPrompt({
+                cvPersonal: cvPersonalRef.current,
+                cvTechnical: cvTechnicalRef.current,
+                jdText: jdTextRef.current,
+                candidateName: candidateNameRef.current,
+                personality: behaviorRef.current.mood,
+                briefText: brief,
+              });
+              sendRt({ type: 'session.update', session: { instructions: sysPrompt } });
+              // Inject transition directive
+              const transId = makeId();
+              sendRt({
+                type: 'conversation.item.create',
+                item: {
+                  id: transId,
+                  type: 'message',
+                  role: 'system',
+                  content: [{
+                    type: 'input_text',
+                    text: `WARMUP COMPLETE. In your next response, warmly acknowledge what they shared, then find a natural creative bridge into the professional portion. Start with Topic 1 from the strategy. Do NOT say "let's begin the interview" or "now for the technical questions".`
+                  }],
+                },
+              });
+              phaseRef.current = 'interview';
+              setPhase('interview');
+              // start interview timer
+              interviewElapsedRef.current = 0;
+              const totalMs = interviewDurationRef.current * 60 * 1000;
+              interviewTimeSecs.current = interviewDurationRef.current * 60;
+              setInterviewTimeLeft(interviewTimeSecs.current);
+              if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
+              interviewTimerRef.current = setInterval(() => {
+                if (isEndingRef.current) { clearInterval(interviewTimerRef.current!); return; }
+                if (!isAriaSpeakingRef.current) interviewElapsedRef.current += 1000;
+                const remaining = Math.max(0, totalMs - interviewElapsedRef.current);
+                setInterviewTimeLeft(Math.floor(remaining / 1000));
+                if (interviewElapsedRef.current >= totalMs) {
+                  clearInterval(interviewTimerRef.current!);
+                  injectBrief('[SYSTEM]: Time limit reached. Transition to wrap-up.');
+                  phaseRef.current = 'wrapup';
+                  setPhase('wrapup');
+                }
+              }, 1000);
+            };
+
+            if (topicsRef.current && topicsRef.current.length > 0) {
+              startInterview(topicsRef.current);
+            } else {
+              addConductorLog('Waiting for strategy generation...');
+              generateStrategy().then((generatedTopics) => {
+                startInterview(generatedTopics);
+              });
+            }
+            return; // CRITICAL: return here to prevent any fallthrough
+          }
+          break;
+        }
+
+        // WRAPUP: count turns, hard limit
+        if (currentPhase === 'wrapup') {
+          wrapupTurnsRef.current += 1;
+          setWrapupTurns(wrapupTurnsRef.current);
+
+          if (wrapupTurnsRef.current >= WRAPUP_HARD_LIMIT) {
+            injectBrief('[SYSTEM]: Wrapup complete. Give a warm, genuine farewell and close the interview.', false);
+            phaseRef.current = 'closing';
+            setPhase('closing');
+          }
+          break;
+        }
+
+        // INTERVIEW: debounced conductor
+        if (currentPhase === 'interview') {
+          const capturedQ = lastAiTextRef.current;
+          const capturedA = text;
+
+          if (conductorDebounceRef.current) clearTimeout(conductorDebounceRef.current);
+          conductorDebounceRef.current = setTimeout(() => {
+            runConductor(capturedQ, capturedA);
+          }, CONDUCTOR_DEBOUNCE_MS);
+        }
+
+        // CLOSING: detect farewell and end
+        if (currentPhase === 'closing') {
+          // Just let RT handle it, we'll detect via AI speech end
+        }
         break;
       }
 
       case 'response.done': {
-        const resp = ev.response as Record<string, unknown> | undefined;
+        const resp = ev.response as any;
         if (resp?.usage) {
-          const u = resp.usage as Record<string, unknown>;
-          const inp = (u.input_token_details as Record<string, number>) || {};
-          const out = (u.output_token_details as Record<string, number>) || {};
+          const inp = resp.usage.input_token_details || {};
+          const out = resp.usage.output_token_details || {};
           usageRef.current.rtTextIn += inp.text_tokens || 0;
           usageRef.current.rtAudioIn += inp.audio_tokens || 0;
           usageRef.current.rtTextOut += out.text_tokens || 0;
           usageRef.current.rtAudioOut += out.audio_tokens || 0;
         }
-        updateUsage();
+        syncUsage();
         setCallStatus('Listening...');
         break;
       }
 
       case 'response.output_item.added': {
-        const item = ev.item as Record<string, unknown> | undefined;
-        if ((item?.role as string) === 'assistant') {
+        const item = ev.item as any;
+        if (item?.role === 'assistant') {
           setCallStatus('Speaking...');
           clearSilenceTimer();
-          isAISpeakingRef.current = true;
+          isAriaSpeakingRef.current = true;
+          setIsAriaSpeaking(true);
         }
         break;
       }
 
       case 'response.output_item.done': {
-        isAISpeakingRef.current = false;
-        if (pendingEndRef.current) { pendingEndRef.current = false; endCall(); }
+        // Debounce AI silence detection
+        if (aiSilenceDebounceRef.current) clearTimeout(aiSilenceDebounceRef.current);
+        aiSilenceDebounceRef.current = setTimeout(() => {
+          isAriaSpeakingRef.current = false;
+          setIsAriaSpeaking(false);
+          if (pendingEndRef.current) { pendingEndRef.current = false; endCall(); }
+
+          // Auto-detect closing farewell
+          if (phaseRef.current === 'closing') {
+            const lastAi = lastAiTextRef.current.toLowerCase();
+            const farewellWords = ['goodbye', 'bye', 'take care', 'best of luck', 'good luck', 'thanks for your time', 'great speaking', 'thank you for'];
+            if (farewellWords.some(w => lastAi.includes(w))) {
+              setTimeout(() => endCall(), 1800);
+            }
+          }
+        }, 700);
         break;
       }
     }
-  }, [runPhaseObserver, clearSilenceTimer, startSilenceTimer, sendRt, endCall]);
+  }, [clearSilenceTimer, startSilenceTimer, runConductor, generateStrategy, addConductorLog, sendRt, injectBrief, endCall, syncUsage]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Call Lifecycle
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CALL LIFECYCLE
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const handleCvFile = async (file: File) => {
-    setIsParsing(true); setSetupErr(''); setCvFileName(file.name);
+    setIsParsing(true);
+    setSetupErr('');
+    setCvFileName(file.name);
     try {
       const text = await extractTextFromFile(file);
-      if (!text || text.trim().length < 50) { setSetupErr('Could not extract text. Please paste CV text directly.'); setCvFileName(''); setIsParsing(false); return; }
-      setCvText(text); cvTextRef.current = text;
+      if (!text || text.trim().length < 50) {
+        setSetupErr('Could not extract text. Please paste CV text directly.');
+        setCvFileName('');
+        setIsParsing(false);
+        return;
+      }
+      setCvText(text);
+      cvTextRef.current = text;
       try {
-        const name = await callMini(`Extract candidate's full name from CV. Return ONLY the name, nothing else.\n${text.slice(0, 1500)}`, 'Name extractor.', usageRef);
+        const name = await callConductor(
+          `Extract the candidate's full name from this CV. Return ONLY the name, nothing else.\n${text.slice(0, 1500)}`,
+          'Name extractor. Return only the name.',
+          usageRef
+        );
         const clean = name.replace(/["']/g, '').trim();
-        if (clean && clean.length > 1 && clean.length < 60) { setCandidateName(clean); candidateNameRef.current = clean; }
+        if (clean && clean.length > 1 && clean.length < 60) {
+          setCandidateName(clean);
+          candidateNameRef.current = clean;
+        }
       } catch { }
-    } catch { setSetupErr('Failed to read file.'); setCvFileName(''); }
+    } catch {
+      setSetupErr('Failed to read file.');
+      setCvFileName('');
+    }
     setIsParsing(false);
   };
 
   const startCall = useCallback(async () => {
     if (isStartingRef.current || isCallActive) return;
-    if (!cvText && !jdText) { setSetupErr('Please upload a CV or paste a Job Description.'); return; }
+    if (!cvText && !jdText) { setSetupErr('Please provide a CV or Job Description.'); return; }
     isStartingRef.current = true;
     isEndingRef.current = false;
 
-    // Reset all state
-    setLogs([]); setScores([]); setQuestionCount(0); setCvSummary('');
-    setStrategy(null); setCurrentTopic(''); setWarmupTurns(0); setIntelLog([]);
-    setInterviewTimeLeft(interviewDuration * 60); setIsCallEnded(false);
-    setLastScore(null); setObserverStatus('idle');
-    setHistorySummary('');
-    setBehavior({ style: 'neutral', softSkills: 5, communication: 5, moodScore: 50 });
+    // Reset all
+    setLogs([]); setScores([]); setTopics([]);
+    setWarmupTurns(0); setWrapupTurns(0); setDuration(0);
+    setConductorLog([]); setIsCallEnded(false); setCurrentBrief('');
+    setIsAriaSpeaking(false); setIsConductorRunning(false);
+    setBehavior({ style: 'neutral', softSkills: 5, communication: 5, mood: 'neutral' });
 
+    topicsRef.current = [];
+    scoresRef.current = [];
     convHistoryRef.current = [];
-    rtItemIdsRef.current = [];
-    historySummaryRef.current = '';
-    prunedBufferRef.current = [];
-    userTurnCountRef.current = 0;
-    observerRunTurnRef.current = -1;
-    isObserverRunningRef.current = false;
-    lastAiQuestionRef.current = '';
     warmupTurnsRef.current = 0;
     wrapupTurnsRef.current = 0;
-    lastSystemItemIdRef.current = null;
-    scoresRef.current = [];
-    strategyRef.current = null;
-    cvSummaryRef.current = '';
-    currentTopicRef.current = 'general';
-    usageRef.current = { rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0 };
-    currentSilenceMsRef.current = SILENCE_BASE_MS;
-    silencePromptCountRef.current = 0;
-    accumulatedElapsedMsRef.current = 0;
+    interviewElapsedRef.current = 0;
+    lastAiTextRef.current = '';
+    lastUserTextRef.current = '';
+    lastSystemItemRef.current = null;
+    usageRef.current = { rtAudioIn: 0, rtAudioOut: 0, rtTextIn: 0, rtTextOut: 0, conductorIn: 0, conductorOut: 0 };
+    silenceCountRef.current = 0;
+    conductorRunningRef.current = false;
+    pendingEndRef.current = false;
+    isAriaSpeakingRef.current = false;
+    processedItemsRef.current.clear();
+
     clearSilenceTimer();
-
-    setCallStatus('Connecting...');
     setPhase('connecting');
+    setCallStatus('Connecting...');
 
-    // Pre-process CV summaries (Dual Context)
+    // Pre-process CV
     if (cvText) {
+      const lid = addConductorLog('Pre-processing CV...');
       try {
         const [personal, technical] = await Promise.all([
-          callMini(
-            `Extract ONLY the human/personal details from this CV.
-            Include: Full Name, Hobbies, Personal Interests, Likes/Dislikes, Volunteer work, and Personality traits mentioned.
-            EXCLUDE: Every single mention of work experience, company names, technical skills, and projects.
-            CV:\n${cvText}`, 
-            'Personal Detail Extractor. Human-only. No tech/work.', usageRef
+          callConductor(
+            `Extract ONLY personal, non-technical details: name, hobbies, interests, volunteer work, personality traits. EXCLUDE all work experience and technical skills.\nCV:\n${cvText}`,
+            'Personal extractor. No tech/work.', usageRef
           ),
-          callMini(
-            `Compress this CV into a high-density technical profile.
-            STRICT RULES:
-            - NO grammar, NO filler words, NO professional bio-talk.
-            - USE "Telegram Style" (dense, technical, data-only).
-            - INCLUDE ALL: Projects, Work Experience, Technical achievements.
-            - KEEP: Every tech stack mentioned, specific tool names, and numerical metrics.
-            EXCLUDE: General bio, hobbies, or fluff.
-            CV:\n${cvText}`,
-            'Technical Data Compressor. High density. Data-only.', usageRef
-          )
+          callConductor(
+            `Compress this CV into a dense technical profile. Telegram style: no filler. Include all projects, stacks, companies, metrics. Exclude bio/hobbies.\nCV:\n${cvText}`,
+            'Technical compressor. Data-only.', usageRef
+          ),
         ]);
-
-        cvPersonalSummaryRef.current = personal;
-        setCvPersonalSummary(personal);
-        cvTechnicalSummaryRef.current = technical;
-        setCvTechnicalSummary(technical);
-        
-        // Full summary as fallback
-        cvSummaryRef.current = personal + "\n" + technical;
-        setCvSummary(personal + "\n" + technical);
-        
-        updateUsage();
-      } catch { }
+        cvPersonalRef.current = personal;
+        cvTechnicalRef.current = technical;
+        syncUsage();
+        finishConductorLog(lid, 'done', 'CV processed ✓');
+        // Start strategy generation early
+        generateStrategy();
+      } catch {
+        finishConductorLog(lid, 'error', 'CV processing failed');
+      }
+    } else if (jdText) {
+      // If no CV but JD exists, still generate strategy
+      generateStrategy();
     }
 
     try {
@@ -1328,28 +1284,23 @@ export default function AriaV5() {
 
       pc.ontrack = e => {
         audioEl.srcObject = e.streams[0];
-        const outCtx = new AudioContext();
-        const outSource = outCtx.createMediaStreamSource(e.streams[0]);
-        const outAnalyser = outCtx.createAnalyser();
-        outAnalyser.fftSize = 256;
-        outSource.connect(outAnalyser);
-        const outData = new Uint8Array(outAnalyser.frequencyBinCount);
+        const ctx = new AudioContext();
+        const src = ctx.createMediaStreamSource(e.streams[0]);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
 
         const checkAudio = () => {
           if (isEndingRef.current) return;
-          outAnalyser.getByteFrequencyData(outData);
-          const avg = outData.reduce((a, b) => a + b, 0) / outData.length;
+          analyser.getByteFrequencyData(data);
+          const avg = data.reduce((a, b) => a + b, 0) / data.length;
           if (avg > 2) {
-            isAISpeakingRef.current = true;
-            if (aiSilenceTimerRef.current) { clearTimeout(aiSilenceTimerRef.current); aiSilenceTimerRef.current = null; }
-          } else if (isAISpeakingRef.current) {
-            if (!aiSilenceTimerRef.current) {
-              aiSilenceTimerRef.current = setTimeout(() => {
-                isAISpeakingRef.current = false;
-                aiSilenceTimerRef.current = null;
-                if (pendingEndRef.current) endCall();
-              }, 600);
+            if (!isAriaSpeakingRef.current) {
+              isAriaSpeakingRef.current = true;
+              setIsAriaSpeaking(true);
             }
+            if (aiSilenceDebounceRef.current) { clearTimeout(aiSilenceDebounceRef.current); aiSilenceDebounceRef.current = null; }
           }
           requestAnimationFrame(checkAudio);
         };
@@ -1361,14 +1312,14 @@ export default function AriaV5() {
       ms.getTracks().forEach(t => pc.addTrack(t, ms));
 
       const actx = new AudioContext();
-      const src = actx.createMediaStreamSource(ms);
-      const analyser = actx.createAnalyser();
-      analyser.fftSize = 256;
-      src.connect(analyser);
-      const fdata = new Uint8Array(analyser.frequencyBinCount);
+      const asrc = actx.createMediaStreamSource(ms);
+      const aanalyser = actx.createAnalyser();
+      aanalyser.fftSize = 256;
+      asrc.connect(aanalyser);
+      const fdata = new Uint8Array(aanalyser.frequencyBinCount);
       const tick = () => {
         if (isEndingRef.current) return;
-        analyser.getByteFrequencyData(fdata);
+        aanalyser.getByteFrequencyData(fdata);
         setMicLevel(Math.min(100, (fdata.reduce((a, b) => a + b, 0) / fdata.length) * 2.2));
         rafRef.current = requestAnimationFrame(tick);
       };
@@ -1380,29 +1331,36 @@ export default function AriaV5() {
       dc.onopen = () => {
         phaseRef.current = 'warmup';
         setPhase('warmup');
-        warmupTurnsRef.current = 0;
 
-        const warmupPrompt = buildRTBrainPrompt({
+        const warmupBrief = buildLiveBrief({
           phase: 'warmup',
           candidateName: candidateNameRef.current,
-          cvSummary: cvSummaryRef.current,
+          topics: [],
+          scores: [],
+          timeLeftSecs: interviewDurationRef.current * 60,
+          behavior: { style: 'neutral', softSkills: 5, communication: 5, mood: 'neutral' },
+          warmupTurns: 0,
+        });
+
+        const warmupPrompt = buildRTSystemPrompt({
+          cvPersonal: cvPersonalRef.current,
+          cvTechnical: cvTechnicalRef.current,
           jdText: jdTextRef.current,
-          strategy: null,
-          numQuestions: numQuestionsRef.current,
-          interviewDurationMins: interviewDurationRef.current,
-          historySummary: historySummaryRef.current,
+          candidateName: candidateNameRef.current,
           personality: 'neutral',
+          briefText: warmupBrief,
         });
 
         sendRt({
           type: 'session.update',
           session: {
             instructions: warmupPrompt,
-            input_audio_transcription: { model: 'whisper-1' },
+            input_audio_transcription: { model: 'whisper-1', language: 'en' },
             turn_detection: { type: 'server_vad' },
             modalities: ['text', 'audio'],
             voice: 'shimmer',
-            tools: [], tool_choice: 'none',
+            tools: [],
+            tool_choice: 'none',
           },
         });
 
@@ -1432,183 +1390,676 @@ export default function AriaV5() {
       setCallStatus('Connection failed');
       setSetupErr(`Failed to connect: ${err.message}`);
       setPhase('setup');
-      pcRef.current?.close(); streamRef.current?.getTracks().forEach(t => t.stop());
-      setIsCallActive(false); isStartingRef.current = false;
+      pcRef.current?.close();
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      setIsCallActive(false);
+      isStartingRef.current = false;
     }
-  }, [isCallActive, cvText, jdText, sendRt, handleRtEvent, clearSilenceTimer, endCall, updateUsage, interviewDuration]);
+  }, [isCallActive, cvText, jdText, handleRtEvent, clearSilenceTimer, addConductorLog, finishConductorLog, syncUsage, sendRt]);
 
   const toggleMute = () => {
-    if (!streamRef.current) return;
-    const track = streamRef.current.getAudioTracks()[0];
+    const track = streamRef.current?.getAudioTracks()[0];
     if (track) { track.enabled = !track.enabled; setIsMuted(!track.enabled); }
   };
 
   useEffect(() => {
     if (!isCallActive) return;
-    const iv = setInterval(() => { setDuration(d => d + 1); }, 1000);
+    const iv = setInterval(() => setDuration(d => d + 1), 1000);
     return () => clearInterval(iv);
   }, [isCallActive]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // UI
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // COMPUTED
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b.score, 0) / scores.length : 0;
-  const scoreColor = (s: number) => s >= 8 ? '#22c55e' : s >= 6 ? '#f59e0b' : s >= 4 ? '#f97316' : '#ef4444';
-  const timeLeftPct = (interviewTimeLeft / (interviewDuration * 60)) * 100;
-  const timerColor = timeLeftPct > 40 ? '#22c55e' : timeLeftPct > 20 ? '#f59e0b' : '#ef4444';
-  const isSpeaking = callStatus === 'Speaking...';
+  const coveredTopics = topics.filter(t => t.status === 'covered' || t.status === 'exhausted');
+  const activeTopicName = topics.find(t => t.status === 'active')?.name || '';
+  const activeLogs = logs.filter(l => !l.pending || l.text.length > 0);
 
-  const BARS = 18;
+  const scoreColor = (s: number) => s >= 8 ? '#4ade80' : s >= 6 ? '#fbbf24' : s >= 4 ? '#f97316' : '#f87171';
+  const timePct = interviewTimeLeft / (interviewDurationRef.current * 60) * 100;
+  const timerColor = timePct > 50 ? '#4ade80' : timePct > 25 ? '#fbbf24' : '#f87171';
+
+  // Mic waveform
+  const BARS = 24;
   const waveHeights = Array.from({ length: BARS }, (_, i) => {
-    const wave = Math.sin((i / BARS) * Math.PI * 2 + Date.now() / 280) * 0.5 + 0.5;
-    return Math.max(2, Math.round((micLevel / 100) * wave * 30 + 2));
+    const base = micLevel / 100;
+    const wave = isAriaSpeaking
+      ? Math.sin((i / BARS) * Math.PI * 3 + Date.now() / 200) * 0.5 + 0.5
+      : Math.sin((i / BARS) * Math.PI * 2) * base * 0.8 + base * 0.2;
+    return Math.max(3, Math.round(wave * 36 + 3));
   });
 
-  const activeLogs = logs.filter(l => !l.pending || l.text);
+  // ─────────────────────────────────────────────────────────────────────────────
+  // STYLES
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const CSS = `
-      @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,700;1,400&display=swap');
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      :root {
-        --bg: #070b12; --bg2: #0c1220; --bg3: #111927;
-        --line: #1c2840; --line2: #263550;
-        --blue: #3b7bff; --green: #22c55e; --amber: #f59e0b;
-        --red: #ef4444; --violet: #c084fc; --cyan: #38bdf8;
-        --text: #e2eaf8; --text2: #7a90b0; --text3: #3a506a;
-        --mono: 'DM Mono', monospace; --sans: 'Syne', sans-serif; --serif: 'Playfair Display', serif;
-      }
-      html, body { background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; height: 100vh; width: 100vw; }
-      ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
-      .noise { position: fixed; inset: 0; pointer-events: none; opacity: .03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-size: 180px; }
-      
-      /* ── SETUP ── */
-      .setup { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; overflow-y:auto; padding:28px; gap:28px; }
-      .setup-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--blue); display:flex; align-items:center; gap:8px; }
-      .setup-eyebrow::before,.setup-eyebrow::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--blue)33); }
-      .setup-title { font-family:var(--serif); font-size:clamp(32px,5vw,52px); font-weight:700; text-align:center; line-height:1.1; }
-      .setup-sub { font-family:var(--mono); font-size:11px; color:var(--text2); letter-spacing:.06em; text-align:center; }
-      .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; width:100%; max-width:900px; }
-      @media(max-width:640px){.grid2{grid-template-columns:1fr;}}
-      .card { background:var(--bg2); border:1px solid var(--line); border-radius:16px; padding:22px; display:flex; flex-direction:column; gap:12px; }
-      .card-label { font-family:var(--mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--text3); }
-      .drop { border:1.5px dashed var(--line2); border-radius:10px; padding:28px 20px; display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; transition:.2s; text-align:center; }
-      .drop:hover { border-color:var(--blue); background:rgba(59,123,255,.04); }
-      .drop-icon { width:40px; height:40px; border-radius:10px; background:rgba(59,123,255,.1); display:flex; align-items:center; justify-content:center; color:var(--blue); font-size:18px; }
-      .cv-ok { display:flex; align-items:center; gap:10px; background:rgba(34,197,94,.07); border:1px solid rgba(34,197,94,.2); border-radius:9px; padding:10px 14px; }
-      .textarea { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:12px 14px; color:var(--text); font-family:var(--sans); font-size:12px; resize:vertical; min-height:150px; line-height:1.6; outline:none; }
-      .textarea:focus { border-color:var(--blue); }
-      .input { width:100%; background:#040709; border:1px solid var(--line); border-radius:9px; padding:10px 14px; color:var(--text); font-family:var(--sans); font-size:13px; outline:none; }
-      .input:focus { border-color:var(--blue); }
-      .err { display:flex; align-items:center; gap:8px; background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25); border-radius:9px; padding:10px 14px; font-size:12px; color:#f87171; width:100%; max-width:900px; }
-      .start-btn { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; max-width:900px; padding:16px; border-radius:13px; background:linear-gradient(135deg,#1d4ed8,#4f46e5); border:none; cursor:pointer; color:white; font-family:var(--sans); font-size:15px; font-weight:700; transition:.25s; }
-      .start-btn:disabled { opacity:.4; cursor:not-allowed; }
-      .start-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(59,123,255,.3); }
-      .tab-row { display:flex; gap:4px; background:rgba(0,0,0,.2); border:1px solid var(--line); border-radius:10px; padding:4px; }
-      .tab-btn { flex:1; border:none; padding:7px; border-radius:7px; font-family:var(--mono); font-size:10px; font-weight:600; cursor:pointer; transition:.2s; }
-      .tab-btn.on { background:var(--blue); color:white; } .tab-btn:not(.on) { background:transparent; color:var(--text3); }
-      .template-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; max-height:220px; overflow-y:auto; }
-      .template-card { padding:9px 12px; background:rgba(255,255,255,.02); border:1px solid var(--line); border-radius:8px; cursor:pointer; transition:.2s; }
-      .template-card:hover,.template-card.on { border-color:var(--blue); background:rgba(59,123,255,.06); }
-      .template-name { font-size:11px; font-weight:700; display:flex; align-items:center; gap:5px; }
-      .template-role { font-size:9px; color:var(--text3); margin-top:2px; }
-      .seg-row { display:flex; gap:6px; }
-      .seg-btn { flex:1; padding:8px 0; border-radius:8px; cursor:pointer; transition:.2s; font-family:var(--mono); font-size:11px; font-weight:600; border:1px solid var(--line); }
-      .seg-btn.on { background:var(--blue); border-color:var(--blue); color:white; } .seg-btn:not(.on) { background:var(--bg3); color:var(--text2); }
-      .tags-row { display:flex; flex-wrap:wrap; gap:7px; justify-content:center; max-width:900px; }
-      .feature-tag { font-family:var(--mono); font-size:9px; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:6px; padding:4px 10px; }
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,300&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,700;1,9..144,300;1,9..144,400&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 
-      /* ── CONNECTING ── */
-      .connecting { display:flex; align-items:center; justify-content:center; height:100vh; }
-      .conn-ring { width:80px; height:80px; border-radius:50%; background:linear-gradient(135deg,#1d4ed8,#4f46e5); display:flex; align-items:center; justify-content:center; animation:pulseRing 1.8s ease-in-out infinite; font-size:28px; }
-      @keyframes pulseRing{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,.5)}50%{box-shadow:0 0 0 20px rgba(99,102,241,0)}}
-      
-      /* ── LIVE ── */
-      .live { display:grid; grid-template-columns:280px 1fr 300px; height:100vh; overflow:hidden; }
-      @media(max-width:1100px){.live{grid-template-columns:260px 1fr;}.live-right{display:none;}}
-      .live-left { border-right:1px solid var(--line); background:var(--bg2); display:flex; flex-direction:column; height:100vh; overflow:hidden; }
-      .live-center { display:flex; flex-direction:column; overflow:hidden; }
-      .live-right { border-left:1px solid var(--line); background:var(--bg2); overflow-y:auto; }
-      .agent-top { padding:20px 16px 16px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:10px; flex-shrink:0; }
-      .avatar { width:64px; height:64px; border-radius:50%; background:linear-gradient(135deg,#1a2b5e,#111e42); border:2px solid var(--line2); display:flex; align-items:center; justify-content:center; font-size:26px; transition:.4s; }
-      .avatar.speaking { box-shadow:0 0 0 4px rgba(59,123,255,.3),0 0 20px rgba(59,123,255,.15); }
-      .status-pill { display:flex; align-items:center; gap:7px; padding:5px 12px; border-radius:100px; font-family:var(--mono); font-size:10px; width:100%; justify-content:center; }
-      .wave { display:flex; align-items:flex-end; gap:2px; height:26px; }
-      .wbar { width:3px; border-radius:2px; transition:height .1s; }
-      .controls { padding:12px; border-top:1px solid var(--line); display:flex; gap:8px; flex-shrink:0; background:var(--bg2); }
-      .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:none; cursor:pointer; border-radius:9px; font-family:var(--sans); font-weight:600; font-size:12px; padding:10px 14px; }
-      .btn-mute { background:rgba(255,255,255,.05); color:var(--text2); border:1px solid var(--line); flex:1; }
-      .btn-end { background:rgba(239,68,68,.1); color:#f87171; border:1px solid rgba(239,68,68,.2); flex:2; }
-      .phase-strip { padding:10px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; }
-      .phase-flow { display:flex; align-items:center; gap:10px; }
-      .phase-sep { width:18px; height:1px; background:var(--line2); }
-      .center-head { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-      .center-body { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; position:relative; }
-      .log-entry { display:flex; gap:10px; align-items:flex-start; }
-      .log-av { width:28px; height:28px; border-radius:7px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:9px; font-weight:700; }
-      .log-av.ai { background:rgba(59,123,255,.1); color:var(--blue); border:1px solid rgba(59,123,255,.2); }
-      .log-av.user { background:rgba(34,197,94,.1); color:#22c55e; border:1px solid rgba(34,197,94,.2); }
-      .log-text { font-size:12px; line-height:1.6; flex:1; }
-      .intel-box { margin:8px; border:1px solid var(--line); border-radius:10px; overflow:hidden; flex-shrink:0; }
-      .intel-hd { padding:7px 12px; background:rgba(255,255,255,.02); border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-      .intel-row { padding:7px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid rgba(255,255,255,.03); }
-      .score-card { margin:10px; border:1px solid var(--line); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:6px; }
-      .metric-pill { font-family:var(--mono); font-size:8px; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,.03); border:1px solid var(--line); color:var(--text3); text-transform:uppercase; }
-      
-      /* ── REPORT ── */
-      .report-wrap { height:100vh; display:flex; align-items:center; justify-content:center; padding:28px; }
-      .report { width:100%; max-width:860px; max-height:90vh; background:var(--bg2); border:1px solid var(--line); border-radius:20px; overflow:hidden; display:flex; flex-direction:column; }
-      .report-hero { padding:36px; background:linear-gradient(135deg,#08101f,#110e2b); border-bottom:1px solid var(--line); text-align:center; }
-      .report-avg { font-family:var(--serif); font-size:60px; font-weight:700; }
-      .report-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); }
-      .rstat { background:var(--bg2); padding:16px; } .rstat-val { font-family:var(--serif); font-size:26px; font-weight:700; } .rstat-lbl { font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--text3); }
-      .answers-section { padding:16px; display:flex; flex-direction:column; gap:10px; overflow-y:auto; flex:1; }
-      .answer-item { border:1px solid var(--line); border-radius:10px; padding:13px; display:flex; flex-direction:column; gap:7px; }
-      .restart-btn { background:linear-gradient(135deg,#1d4ed8,#4f46e5); color:white; padding:12px 32px; border-radius:10px; font-family:var(--sans); font-size:14px; font-weight:700; border:none; cursor:pointer; }
-      
-      .fade { animation:fadeUp .35s ease forwards; }
-      @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-      .spinner { width:14px; height:14px; border-radius:50%; border:2px solid rgba(255,255,255,.2); border-top-color:white; animation:spin .8s linear infinite; }
-      @keyframes spin{to{transform:rotate(360deg)}}
-      .dot-pulse { width:6px; height:6px; border-radius:50%; animation:dotPulse 1.4s infinite; }
-      @keyframes dotPulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-      .arch-tag { display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:8px; padding:3px 8px; border-radius:5px; font-weight:700; letter-spacing:.05em; }
-      .silence-bar { height:2px; background:var(--line); border-radius:1px; overflow:hidden; }
-      .silence-fill { height:100%; transition:width .1s linear, background .3s; border-radius:1px; }
-    `;
+    :root {
+      --bg: #06080d;
+      --s1: #0c1018;
+      --s2: #111620;
+      --s3: #171e2c;
+      --border: #1e2a3d;
+      --border2: #28384f;
+      --t1: #d4e0f0;
+      --t2: #6b82a0;
+      --t3: #364d6a;
+      --blue: #3d7bff;
+      --blue2: #6099ff;
+      --green: #4ade80;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --violet: #a78bfa;
+      --cyan: #38bdf8;
+      --mono: 'IBM Plex Mono', monospace;
+      --display: 'Fraunces', serif;
+      --sans: 'Instrument Sans', sans-serif;
+    }
 
-  // ── RENDER: Setup ──────────────────────────────────────────────────────────
+    html, body {
+      background: var(--bg);
+      color: var(--t1);
+      font-family: var(--sans);
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+    }
+
+    ::-webkit-scrollbar { width: 2px; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+    /* ── SETUP ── */
+    .setup {
+      min-height: 100vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 24px 60px;
+      gap: 32px;
+    }
+
+    .setup-header {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .aria-mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #0f1f42, #1a1040);
+      border: 1px solid var(--border2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+    }
+
+    .setup-title {
+      font-family: var(--display);
+      font-size: clamp(36px, 5vw, 56px);
+      font-weight: 300;
+      line-height: 1.1;
+      color: var(--t1);
+    }
+
+    .setup-title em {
+      font-style: italic;
+      color: var(--blue2);
+    }
+
+    .setup-sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--t3);
+      letter-spacing: .1em;
+    }
+
+    .setup-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      width: 100%;
+      max-width: 880px;
+    }
+    @media(max-width: 640px) { .setup-grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--s1);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .card-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
+
+    .drop-zone {
+      border: 1.5px dashed var(--border2);
+      border-radius: 10px;
+      padding: 28px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: all .2s;
+      text-align: center;
+    }
+    .drop-zone:hover { border-color: var(--blue); background: rgba(61,123,255,.03); }
+
+    .drop-icon {
+      width: 38px; height: 38px;
+      border-radius: 10px;
+      background: rgba(61,123,255,.1);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--blue); font-size: 16px;
+    }
+
+    .cv-loaded {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(74,222,128,.06);
+      border: 1px solid rgba(74,222,128,.2);
+      border-radius: 9px;
+      padding: 10px 14px;
+    }
+
+    .textarea {
+      width: 100%;
+      background: #04060a;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 12px 14px;
+      color: var(--t1);
+      font-family: var(--sans);
+      font-size: 12px;
+      resize: vertical;
+      min-height: 160px;
+      line-height: 1.7;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .textarea:focus { border-color: var(--blue); }
+
+    .input {
+      width: 100%;
+      background: #04060a;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 10px 14px;
+      color: var(--t1);
+      font-family: var(--sans);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .input:focus { border-color: var(--blue); }
+
+    .tab-row {
+      display: flex; gap: 4px;
+      background: rgba(0,0,0,.2);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 3px;
+    }
+
+    .tab-btn {
+      flex: 1; border: none; padding: 6px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 10px; font-weight: 500;
+      cursor: pointer; transition: all .2s;
+    }
+    .tab-btn.on { background: var(--blue); color: white; }
+    .tab-btn:not(.on) { background: transparent; color: var(--t3); }
+
+    .template-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+      max-height: 220px; overflow-y: auto;
+    }
+
+    .tmpl {
+      padding: 10px 12px;
+      background: rgba(255,255,255,.02);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    .tmpl:hover, .tmpl.on { border-color: var(--blue); background: rgba(61,123,255,.05); }
+
+    .seg-row { display: flex; gap: 5px; }
+    .seg { flex: 1; padding: 7px 0; border-radius: 8px; cursor: pointer; transition: all .2s; font-family: var(--mono); font-size: 11px; font-weight: 500; border: 1px solid var(--border); text-align: center; background: var(--s2); color: var(--t2); }
+    .seg.on { background: var(--blue); border-color: var(--blue); color: white; }
+
+    .err {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(248,113,113,.07);
+      border: 1px solid rgba(248,113,113,.2);
+      border-radius: 9px; padding: 10px 14px;
+      font-size: 12px; color: #fca5a5;
+      max-width: 880px; width: 100%;
+    }
+
+    .start-btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      width: 100%; max-width: 880px;
+      padding: 16px; border-radius: 13px;
+      background: linear-gradient(135deg, #1740b8, #3d2b9c);
+      border: none; cursor: pointer; color: white;
+      font-family: var(--sans); font-size: 15px; font-weight: 600;
+      letter-spacing: .01em;
+      transition: all .25s;
+    }
+    .start-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .start-btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(55,64,184,.35); }
+
+    .features-row {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      justify-content: center;
+      max-width: 880px;
+    }
+    .ftag {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 4px 10px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.02);
+      letter-spacing: .06em;
+    }
+
+    /* ── CONNECTING ── */
+    .connecting {
+      height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .conn-orb {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: linear-gradient(135deg, #1740b8, #3d2b9c);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px;
+      animation: orbPulse 2s ease-in-out infinite;
+    }
+    @keyframes orbPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(61,123,255,.4); }
+      50% { box-shadow: 0 0 0 18px rgba(61,123,255,0); }
+    }
+
+    /* ── LIVE ── */
+    .live {
+      display: grid;
+      grid-template-columns: 260px 1fr 280px;
+      height: 100vh;
+      overflow: hidden;
+    }
+    @media(max-width: 1080px) {
+      .live { grid-template-columns: 240px 1fr; }
+      .right-panel { display: none; }
+    }
+
+    /* Left Panel */
+    .left-panel {
+      border-right: 1px solid var(--border);
+      background: var(--s1);
+      display: flex; flex-direction: column;
+      height: 100vh; overflow: hidden;
+    }
+
+    .agent-head {
+      padding: 20px 16px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .orb {
+      position: relative;
+      width: 60px; height: 60px; border-radius: 50%;
+      background: linear-gradient(135deg, #0d1c3d, #0e0d2d);
+      border: 1.5px solid var(--border2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      transition: all .4s;
+    }
+    .orb.speaking {
+      box-shadow: 0 0 0 3px rgba(61,123,255,.25), 0 0 18px rgba(61,123,255,.15);
+      border-color: rgba(61,123,255,.5);
+    }
+
+    .status-chip {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 100px;
+      font-family: var(--mono); font-size: 10px;
+      width: 100%; justify-content: center;
+      transition: all .3s;
+    }
+
+    .waveform {
+      display: flex; align-items: flex-end; gap: 2px;
+      height: 28px; width: 100%;
+      justify-content: center;
+    }
+    .wbar {
+      width: 2.5px; border-radius: 2px;
+      transition: height .08s ease, background .3s;
+      min-height: 3px;
+    }
+
+    .silence-track {
+      width: 100%; padding: 0 2px;
+    }
+    .silence-bar {
+      height: 2px; background: var(--border); border-radius: 1px; overflow: hidden;
+    }
+    .silence-fill {
+      height: 100%; border-radius: 1px;
+      transition: width .15s linear, background .3s;
+    }
+
+    /* Left scrollable area */
+    .left-scroll {
+      flex: 1;
+      overflow-y: auto;
+      display: flex; flex-direction: column; gap: 0;
+    }
+
+    .section {
+      border-bottom: 1px solid var(--border);
+    }
+    .section-hd {
+      padding: 8px 14px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: rgba(0,0,0,.15);
+    }
+    .section-title {
+      font-family: var(--mono);
+      font-size: 8px; letter-spacing: .14em; text-transform: uppercase;
+      color: var(--t3);
+    }
+
+    /* Conductor status */
+    .conductor-row {
+      padding: 7px 14px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid rgba(255,255,255,.03);
+    }
+    .clog-dot {
+      width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+    }
+
+    /* Topic tracker */
+    .topic-row {
+      padding: 8px 14px;
+      display: flex; align-items: flex-start; gap: 10px;
+      border-bottom: 1px solid rgba(255,255,255,.03);
+      transition: background .2s;
+    }
+    .topic-row.active { background: rgba(61,123,255,.04); }
+
+    .topic-icon {
+      width: 18px; height: 18px; border-radius: 5px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; flex-shrink: 0; margin-top: 1px;
+    }
+
+    /* Controls */
+    .controls {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 8px;
+      flex-shrink: 0;
+    }
+    .btn {
+      flex: 1; padding: 10px; border-radius: 9px;
+      border: none; cursor: pointer;
+      font-family: var(--sans); font-size: 12px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      transition: all .2s;
+    }
+    .btn-mute { background: rgba(255,255,255,.05); color: var(--t2); border: 1px solid var(--border); }
+    .btn-end { background: rgba(248,113,113,.1); color: #fca5a5; border: 1px solid rgba(248,113,113,.2); flex: 2; }
+
+    /* Center */
+    .center-panel {
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    .center-top {
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .phase-dots {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pdot {
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+    }
+    .pdot-circle {
+      width: 7px; height: 7px; border-radius: 50%;
+      transition: all .4s;
+    }
+    .pdot-label {
+      font-family: var(--mono); font-size: 7px;
+      letter-spacing: .06em;
+      transition: color .4s;
+    }
+    .pdot-sep {
+      width: 16px; height: 1px; background: var(--border);
+    }
+
+    .center-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex; flex-direction: column; gap: 14px;
+      position: relative;
+    }
+
+    .msg {
+      display: flex; gap: 10px; align-items: flex-start;
+      animation: fadeSlide .3s ease forwards;
+    }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg-av {
+      width: 26px; height: 26px; border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-size: 8px; font-weight: 600;
+      flex-shrink: 0;
+    }
+    .msg-av.ai { background: rgba(61,123,255,.12); color: var(--blue2); border: 1px solid rgba(61,123,255,.2); }
+    .msg-av.user { background: rgba(74,222,128,.1); color: var(--green); border: 1px solid rgba(74,222,128,.2); }
+
+    .msg-text {
+      font-size: 13px; line-height: 1.65;
+      flex: 1; color: var(--t1);
+    }
+    .msg-text.ai { color: var(--t1); }
+    .msg-text.user { color: #c8d8f0; }
+
+    /* End overlay */
+    .end-overlay {
+      position: absolute; inset: 0; z-index: 10;
+      background: rgba(6,8,13,.92);
+      backdrop-filter: blur(12px);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 24px; padding: 40px; text-align: center;
+      animation: fadeSlide .4s ease forwards;
+    }
+
+    /* Right panel */
+    .right-panel {
+      border-left: 1px solid var(--border);
+      background: var(--s1);
+      overflow-y: auto;
+      display: flex; flex-direction: column;
+    }
+
+    .score-item {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .score-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px; border-radius: 5px;
+      font-family: var(--mono); font-size: 9px; font-weight: 700;
+      white-space: nowrap;
+    }
+    .metric-tag {
+      font-family: var(--mono); font-size: 8px;
+      padding: 1px 5px; border-radius: 3px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      color: var(--t3);
+    }
+
+    /* ── REPORT ── */
+    .report-wrap {
+      height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 28px;
+    }
+
+    .report {
+      width: 100%; max-width: 820px; max-height: 92vh;
+      background: var(--s1);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden; display: flex; flex-direction: column;
+      animation: fadeSlide .4s ease forwards;
+    }
+
+    .report-hero {
+      padding: 36px; text-align: center;
+      background: linear-gradient(135deg, #07101e, #0d0b24);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .report-score {
+      font-family: var(--display);
+      font-size: 72px; font-weight: 700; line-height: 1;
+    }
+
+    .report-stats {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 1px; background: var(--border);
+    }
+    .rstat {
+      background: var(--s1); padding: 16px;
+    }
+    .rstat-val { font-family: var(--display); font-size: 24px; font-weight: 700; }
+    .rstat-lbl { font-family: var(--mono); font-size: 8px; letter-spacing: .1em; text-transform: uppercase; color: var(--t3); margin-top: 2px; }
+
+    .report-body {
+      overflow-y: auto; flex: 1;
+      padding: 16px; display: flex; flex-direction: column; gap: 10px;
+    }
+
+    .answer-card {
+      border: 1px solid var(--border); border-radius: 11px;
+      padding: 14px; display: flex; flex-direction: column; gap: 7px;
+    }
+    .missed-block {
+      padding: 7px 10px; background: var(--s2); border-radius: 7px;
+    }
+
+    .restart-btn {
+      background: linear-gradient(135deg, #1740b8, #3d2b9c);
+      color: white; padding: 12px 36px; border-radius: 10px;
+      font-family: var(--sans); font-size: 14px; font-weight: 600;
+      border: none; cursor: pointer;
+      transition: all .25s;
+    }
+    .restart-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(55,64,184,.3); }
+
+    .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: white; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .pulse { animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity:.5 } 50% { opacity:1 } }
+
+    .fade-in { animation: fadeSlide .3s ease forwards; }
+  `;
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER: SETUP
+  // ─────────────────────────────────────────────────────────────────────────────
+
   if (phase === 'setup') return (
     <>
       <style>{CSS}</style>
-      <div className="noise" />
       <div className="setup">
-        <div className="fade" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <div className="setup-eyebrow">Aria v5 · RT-Brain Architecture</div>
-          <h1 className="setup-title">Interview intelligence,<br /><em>finally autonomous.</em></h1>
-          <p className="setup-sub">RT drives the conversation. Observer only scores & transitions.</p>
+        <div className="setup-header fade-in">
+          <div className="aria-mark">🎙</div>
+          <h1 className="setup-title">Interview with <em>Aria</em></h1>
+          <p className="setup-sub">v6 · Conductor Architecture · Non-robotic · Context-aware</p>
         </div>
 
-        <div className="grid2 fade">
+        <div className="setup-grid fade-in">
           {/* CV Card */}
           <div className="card">
             <div className="card-label">Candidate CV</div>
-            {!cvText ? (
+            {cvText ? (
               <>
-                <div className="drop" onClick={() => { const i = document.createElement('input'); i.type = 'file'; i.onchange = (e: any) => handleCvFile(e.target.files[0]); i.click(); }}>
-                  <div className="drop-icon">{isParsing ? <div className="spinner" /> : '📄'}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text2)' }}>{isParsing ? 'Parsing CV...' : 'Upload PDF or text file'}</div>
+                <div className="cv-loaded">
+                  <span style={{ fontSize: 15 }}>✓</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--green)' }}>{cvFileName || 'CV loaded'}</div>
+                    <div style={{ fontSize: 10, color: 'var(--t3)', fontFamily: 'var(--mono)' }}>{cvText.length.toLocaleString()} chars</div>
+                  </div>
+                  <button
+                    onClick={() => { setCvText(''); setCvFileName(''); }}
+                    style={{ background: 'none', border: 'none', color: 'var(--t3)', cursor: 'pointer', fontSize: 12 }}
+                  >✕</button>
                 </div>
-                <textarea className="textarea" placeholder="Or paste CV text here..." value={cvText} onChange={e => setCvText(e.target.value)} />
               </>
             ) : (
               <>
-                <div className="cv-ok">
-                  <span style={{ fontSize: 16 }}>✅</span>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: '#22c55e' }}>{cvFileName || 'CV loaded'}</div>
+                <div className="drop-zone" onClick={() => {
+                  const i = document.createElement('input');
+                  i.type = 'file';
+                  i.accept = '.pdf,.txt,.doc,.docx';
+                  i.onchange = (e: any) => handleCvFile(e.target.files[0]);
+                  i.click();
+                }}>
+                  <div className="drop-icon">{isParsing ? <div className="spin" /> : '📄'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--t2)' }}>{isParsing ? 'Parsing...' : 'Upload PDF or text'}</div>
+                  <div style={{ fontSize: 10, color: 'var(--t3)', fontFamily: 'var(--mono)' }}>or paste below</div>
                 </div>
-                <button className="btn btn-mute" onClick={() => { setCvText(''); setCvFileName(''); }}>Remove CV</button>
+                <textarea
+                  className="textarea"
+                  placeholder="Paste CV text here..."
+                  style={{ minHeight: 120 }}
+                  value={cvText}
+                  onChange={e => setCvText(e.target.value)}
+                />
               </>
             )}
           </div>
@@ -1617,33 +2068,46 @@ export default function AriaV5() {
           <div className="card">
             <div className="card-label">Job Description</div>
             <div className="tab-row">
-              <button className={`tab-btn ${jdTab === 'manual' ? 'on' : ''}`} onClick={() => setJdTab('manual')}>Manual Input</button>
+              <button className={`tab-btn ${jdTab === 'manual' ? 'on' : ''}`} onClick={() => setJdTab('manual')}>Manual</button>
               <button className={`tab-btn ${jdTab === 'templates' ? 'on' : ''}`} onClick={() => setJdTab('templates')}>Templates</button>
             </div>
+
             {jdTab === 'manual' ? (
-              <textarea className="textarea fade" placeholder="Paste Job Description here..." style={{ minHeight: 180 }} value={jdText} onChange={e => setJdText(e.target.value)} />
+              <textarea
+                className="textarea fade-in"
+                placeholder="Paste Job Description here..."
+                style={{ minHeight: 160 }}
+                value={jdText}
+                onChange={e => setJdText(e.target.value)}
+              />
             ) : (
-              <div className="template-grid fade">
-                {Object.entries(JD_TEMPLATES).map(([key, value]) => {
-                  const icons: any = { frontend: '⚛️', backend: '⚙️', fullstack: '⚡', ai: '🧠', devops: '☁️', mobile: '📱', qa: '🧪' };
-                  const names: any = { frontend: 'Frontend', backend: 'Backend', fullstack: 'Fullstack', ai: 'AI/ML', devops: 'DevOps', mobile: 'Mobile', qa: 'QA/SDET' };
+              <div className="template-grid fade-in">
+                {Object.entries(JD_TEMPLATES).map(([key, val]) => {
+                  const icons: any = { frontend: '⚛️', backend: '⚙️', fullstack: '⚡', ai: '🧠', devops: '☁️', mobile: '📱' };
+                  const names: any = { frontend: 'Frontend', backend: 'Backend', fullstack: 'Fullstack', ai: 'AI/ML', devops: 'DevOps', mobile: 'Mobile' };
                   return (
-                    <div key={key} className={`template-card ${jdText === value ? 'on' : ''}`} onClick={() => { setJdText(value); setJdTab('manual'); }}>
-                      <div className="template-name"><span>{icons[key]}</span>{names[key]}</div>
-                      <div className="template-role">{value.split('\n')[1]?.replace('Focus: ', '')}</div>
+                    <div key={key} className={`tmpl ${selectedTemplate === key ? 'on' : ''}`} onClick={() => { setJdText(val); setSelectedTemplate(key); setJdTab('manual'); }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}><span>{icons[key]}</span>{names[key]}</div>
+                      <div style={{ fontSize: 9, color: 'var(--t3)', marginTop: 2 }}>{val.split('\n')[0]?.replace('Role: ', '')}</div>
                     </div>
                   );
                 })}
               </div>
             )}
-            <input className="input" placeholder="Candidate Name (auto-detected from CV)" value={candidateName} onChange={e => setCandidateName(e.target.value)} />
 
-            <div style={{ display: 'flex', gap: 16 }}>
+            <input
+              className="input"
+              placeholder="Candidate name (auto-detected from CV)"
+              value={candidateName}
+              onChange={e => setCandidateName(e.target.value)}
+            />
+
+            <div style={{ display: 'flex', gap: 14 }}>
               <div style={{ flex: 1 }}>
                 <div className="card-label" style={{ marginBottom: 8 }}>Questions</div>
                 <div className="seg-row">
                   {[3, 5, 8, 10].map(n => (
-                    <button key={n} className={`seg-btn ${numQuestions === n ? 'on' : ''}`} onClick={() => setNumQuestions(n)}>{n}</button>
+                    <button key={n} className={`seg ${numQuestions === n ? 'on' : ''}`} onClick={() => setNumQuestions(n)}>{n}</button>
                   ))}
                 </div>
               </div>
@@ -1651,7 +2115,7 @@ export default function AriaV5() {
                 <div className="card-label" style={{ marginBottom: 8 }}>Duration</div>
                 <div className="seg-row">
                   {[5, 10, 15, 20].map(m => (
-                    <button key={m} className={`seg-btn ${interviewDuration === m ? 'on' : ''}`} onClick={() => setInterviewDuration(m)}>{m}m</button>
+                    <button key={m} className={`seg ${interviewDuration === m ? 'on' : ''}`} onClick={() => setInterviewDuration(m)}>{m}m</button>
                   ))}
                 </div>
               </div>
@@ -1659,147 +2123,153 @@ export default function AriaV5() {
           </div>
         </div>
 
-        <div className="tags-row fade">
-          <div className="feature-tag" style={{ color: '#60a5fa' }}>RT = Autonomous Brain</div>
-          <div className="feature-tag" style={{ color: '#22c55e' }}>Observer = Score + Phase Only</div>
-          <div className="feature-tag" style={{ color: '#c084fc' }}>Strategy Injected Once</div>
-          <div className="feature-tag" style={{ color: '#f59e0b' }}>50% CV · 50% JD Questions</div>
-          <div className="feature-tag" style={{ color: '#38bdf8' }}>20-Message Context</div>
+        <div className="features-row fade-in">
+          {[
+            ['var(--blue2)', 'RT = Voice Only'],
+            ['var(--green)', 'Conductor = 3 Background Agents'],
+            ['var(--amber)', '50% CV · 50% JD'],
+            ['var(--violet)', 'No topic hijacking'],
+            ['var(--cyan)', `Warmup ${WARMUP_HARD_LIMIT} turns hard limit`],
+            ['var(--red)', 'Interruption-aware'],
+          ].map(([color, label]) => (
+            <div key={label as string} className="ftag" style={{ color: color as string }}>{label as string}</div>
+          ))}
         </div>
 
-        {setupErr && <div className="err fade">⚠️ {setupErr}</div>}
-        <button className="start-btn fade" disabled={isParsing || (!cvText && !jdText)} onClick={() => { setSetupErr(''); startCall(); }}>
-          {isParsing ? <><div className="spinner" /> Processing...</> : 'Start Interview with Aria v5'}
+        {setupErr && <div className="err fade-in">⚠ {setupErr}</div>}
+
+        <button
+          className="start-btn fade-in"
+          disabled={isParsing || (!cvText && !jdText)}
+          onClick={() => { setSetupErr(''); startCall(); }}
+        >
+          {isParsing ? <><div className="spin" /> Processing CV...</> : '⟶  Start Interview with Aria'}
         </button>
       </div>
     </>
   );
 
-  // ── RENDER: Switching Logic ───────────────────────────────────────────────
-  if (useFriendlyUI) {
-    return (
-      <FriendlyUI
-        phase={phase}
-        setPhase={setPhase}
-        candidateName={candidateName}
-        setCandidateName={setCandidateName}
-        cvText={cvText}
-        setCvText={setCvText}
-        jdText={jdText}
-        setJdText={setJdText}
-        cvFileName={cvFileName}
-        isParsing={isParsing}
-        setupErr={setupErr}
-        numQuestions={numQuestions}
-        setNumQuestions={setNumQuestions}
-        interviewDuration={interviewDuration}
-        setInterviewDuration={setInterviewDuration}
-        isCallActive={isCallActive}
-        callStatus={callStatus}
-        isMuted={isMuted}
-        micLevel={micLevel}
-        duration={duration}
-        isCallEnded={isCallEnded}
-        logs={logs}
-        scores={scores}
-        currentTopic={currentTopic}
-        interviewTimeLeft={interviewTimeLeft}
-        behavior={behavior}
-        usage={usage}
-        historySummary={historySummary}
-        strategy={strategy}
-        observerStatus={observerStatus}
-        silenceTimeLeft={silenceTimeLeft}
-        silenceDuration={silenceDurationRef.current}
-        warmupTurns={warmupTurns}
-        WARMUP_TURNS_REQUIRED={WARMUP_TURNS_REQUIRED}
-        handleCvFile={handleCvFile}
-        startCall={startCall}
-        toggleMute={toggleMute}
-        endCall={endCall}
-        computeVoiceCost={computeVoiceCost}
-        computeIntelCost={computeIntelCost}
-        ScoreBadge={ScoreBadge}
-        fmtTime={fmtTime}
-        PhaseDot={PhaseDot}
-        useFriendlyUI={useFriendlyUI}
-        setUseFriendlyUI={setUseFriendlyUI}
-      />
-    );
-  }
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER: CONNECTING
+  // ─────────────────────────────────────────────────────────────────────────────
 
-  // ── RENDER: Connecting ────────────────────────────────────────────────────
   if (phase === 'connecting') return (
     <>
       <style>{CSS}</style>
-      <div className="noise" />
       <div className="connecting">
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, textAlign: 'center' }} className="fade">
-          <div className="conn-ring">🎙️</div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, textAlign: 'center' }} className="fade-in">
+          <div className="conn-orb">🎙</div>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Initializing Aria v5</div>
-            <div style={{ fontSize: 12, color: 'var(--text2)', fontFamily: 'var(--mono)' }}>Pre-processing CV · Building RT brain prompt</div>
+            <div style={{ fontFamily: 'var(--display)', fontSize: 22, fontWeight: 300, marginBottom: 6 }}>Initializing Aria v6</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--t2)' }}>
+              {conductorLog[0]?.msg || 'Pre-processing · Building context · Connecting...'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {conductorLog.slice(0, 3).map(l => (
+              <div key={l.id} style={{ fontFamily: 'var(--mono)', fontSize: 9, color: l.status === 'done' ? 'var(--green)' : l.status === 'error' ? 'var(--red)' : 'var(--amber)', padding: '3px 8px', border: '1px solid var(--border)', borderRadius: 5 }}>
+                {l.status === 'done' ? '✓' : l.status === 'error' ? '✗' : '·'} {l.msg.slice(0, 30)}
+              </div>
+            ))}
           </div>
         </div>
       </div>
     </>
   );
 
-  // ── RENDER: Report ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER: REPORT
+  // ─────────────────────────────────────────────────────────────────────────────
+
   if (phase === 'report') return (
     <>
       <style>{CSS}</style>
-      <div className="noise" />
       <div className="report-wrap">
-        <div className="report fade">
+        <div className="report">
           <div className="report-hero">
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--text3)', marginBottom: 8, letterSpacing: '.1em' }}>INTERVIEW COMPLETE</div>
-            {avgScore > 0 && <div className="report-avg" style={{ color: scoreColor(avgScore) }}>{avgScore.toFixed(1)}</div>}
-            <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4 }}>Average Score · {scores.length} Questions Evaluated</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--t3)', letterSpacing: '.12em', marginBottom: 10 }}>INTERVIEW COMPLETE · ARIA v6</div>
+            {avgScore > 0 ? (
+              <div className="report-score" style={{ color: scoreColor(avgScore) }}>{avgScore.toFixed(1)}</div>
+            ) : (
+              <div className="report-score" style={{ color: 'var(--t3)' }}>—</div>
+            )}
+            <div style={{ fontSize: 13, color: 'var(--t2)', marginTop: 6 }}>{scores.length} topics evaluated · {fmtTime(duration)} total</div>
           </div>
+
           <div className="report-stats">
-            <div className="rstat"><div className="rstat-val">{scores.length}</div><div className="rstat-lbl">Answers</div></div>
-            <div className="rstat"><div className="rstat-val">{behavior.softSkills}/10</div><div className="rstat-lbl">Soft Skills</div></div>
-            <div className="rstat"><div className="rstat-val" style={{ fontSize: 16, fontWeight: 800 }}>{behavior.style.toUpperCase()}</div><div className="rstat-lbl">Style</div></div>
-            <div className="rstat"><div className="rstat-val">${(computeVoiceCost(usage) + computeIntelCost(usage)).toFixed(4)}</div><div className="rstat-lbl">Total Cost</div></div>
-          </div>
-          <div className="answers-section">
-            <div style={{ padding: '12px 20px', background: 'rgba(59,123,255,.05)', borderRadius: 12, border: '1px solid var(--line)', marginBottom: 15 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--blue)', marginBottom: 4, letterSpacing: '.1em' }}>BEHAVIORAL AUDIT</div>
-              <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
-                The candidate demonstrated a <strong>{behavior.style}</strong> communication style throughout the session.
-                Soft skills were evaluated at <strong>{behavior.softSkills}/10</strong> with a clarity score of <strong>{behavior.communication}/10</strong>.
-                Aria adapted her demeanor to <strong>{behavior.moodScore < 35 ? 'Encouraging' : behavior.moodScore > 65 ? 'Strict Pressure' : 'Balanced/Neutral'}</strong> mode to extract optimal technical depth.
-              </div>
+            <div className="rstat">
+              <div className="rstat-val">{scores.length}</div>
+              <div className="rstat-lbl">Scored</div>
             </div>
+            <div className="rstat">
+              <div className="rstat-val">{behavior.softSkills}/10</div>
+              <div className="rstat-lbl">Soft Skills</div>
+            </div>
+            <div className="rstat">
+              <div className="rstat-val" style={{ fontSize: 15, fontWeight: 700, marginTop: 4 }}>{behavior.style.toUpperCase()}</div>
+              <div className="rstat-lbl">Comm Style</div>
+            </div>
+            <div className="rstat">
+              <div className="rstat-val" style={{ fontSize: 15, fontWeight: 700, marginTop: 4 }}>${computeCost(usage).toFixed(4)}</div>
+              <div className="rstat-lbl">Cost</div>
+            </div>
+          </div>
+
+          {/* Behavioral summary */}
+          <div style={{ padding: '14px 16px', background: 'rgba(61,123,255,.04)', borderBottom: '1px solid var(--border)', margin: '0' }}>
+            <div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--blue2)', fontWeight: 700, marginBottom: 6, letterSpacing: '.1em' }}>BEHAVIORAL AUDIT</div>
+            <div style={{ fontSize: 12, color: 'var(--t2)', lineHeight: 1.65 }}>
+              {candidateName || 'The candidate'} demonstrated a <strong style={{ color: 'var(--t1)' }}>{behavior.style}</strong> communication style.
+              Soft skills: <strong style={{ color: 'var(--t1)' }}>{behavior.softSkills}/10</strong>.
+              Communication clarity: <strong style={{ color: 'var(--t1)' }}>{behavior.communication}/10</strong>.
+              Aria adapted to <strong style={{ color: 'var(--t1)' }}>{behavior.mood}</strong> mode.
+            </div>
+          </div>
+
+          <div className="report-body">
             {scores.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text3)', padding: 20 }}>No answers recorded.</div>
+              <div style={{ textAlign: 'center', color: 'var(--t3)', padding: 30 }}>No scored answers recorded.</div>
             ) : scores.map((s, i) => (
-              <div className="answer-item" key={i}>
+              <div className="answer-card" key={i}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{s.questionSummary || s.question}</div>
-                  <ScoreBadge score={s.score} />
+                  <div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{s.topic}</div>
+                  <div className="score-badge" style={{ background: scoreColor(s.score) + '18', color: scoreColor(s.score), border: `1px solid ${scoreColor(s.score)}30` }}>
+                    {s.score}/10
+                  </div>
                 </div>
-                {s.topic && <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--text3)', textTransform: 'uppercase' }}>{s.topic}</div>}
-                <div style={{ fontSize: 11, color: 'var(--text2)', borderLeft: '2px solid var(--line)', paddingLeft: 8 }}>{s.answerSummary}</div>
-                {s.logicEvaluation && <div style={{ fontSize: 10, color: 'var(--text3)' }}><strong>Logic:</strong> {s.logicEvaluation}</div>}
-                {s.missedOpportunities && s.missedOpportunities.length > 0 && (
-                  <div style={{ padding: '6px 10px', background: 'var(--bg3)', borderRadius: 6 }}>
-                    <div style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 800, marginBottom: 4 }}>MISSED OPPORTUNITIES</div>
-                    {s.missedOpportunities.map((o, idx) => <div key={idx} style={{ fontSize: 9, color: 'var(--text2)', display: 'flex', gap: 5 }}><span style={{ color: 'var(--amber)' }}>•</span>{o}</div>)}
+                {s.answerSummary && (
+                  <div style={{ fontSize: 11, color: 'var(--t2)', borderLeft: '2px solid var(--border2)', paddingLeft: 10, lineHeight: 1.6 }}>
+                    {s.answerSummary}
                   </div>
                 )}
-                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                  {s.confidence && <span className="metric-pill">Conf: {s.confidence}</span>}
-                  {s.grammar && <span className="metric-pill">Grammar: {s.grammar}</span>}
-                  {s.clarity && <span className="metric-pill">Clarity: {s.clarity}</span>}
-                  {s.depthStr && <span className="metric-pill">Depth: {s.depthStr}</span>}
-                  {s.technicalAccuracy && <span className="metric-pill" style={{ color: 'var(--amber)' }}>Accuracy: {s.technicalAccuracy}/10</span>}
+                {s.feedback && (
+                  <div style={{ fontSize: 11, color: 'var(--t2)', lineHeight: 1.6 }}>{s.feedback}</div>
+                )}
+                {s.logicEvaluation && (
+                  <div style={{ fontSize: 10, color: 'var(--t3)' }}><span style={{ color: 'var(--t2)', fontWeight: 600 }}>Logic: </span>{s.logicEvaluation}</div>
+                )}
+                {s.missedOpportunities.length > 0 && (
+                  <div className="missed-block">
+                    <div style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 700, marginBottom: 5, letterSpacing: '.1em' }}>MISSED OPPORTUNITIES</div>
+                    {s.missedOpportunities.map((o, idx) => (
+                      <div key={idx} style={{ fontSize: 10, color: 'var(--t3)', display: 'flex', gap: 5, marginBottom: 2 }}>
+                        <span style={{ color: 'var(--amber)' }}>·</span>{o}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
+                  {s.confidence && <span className="metric-tag">Conf: {s.confidence}</span>}
+                  {s.clarity && <span className="metric-tag">Clarity: {s.clarity}</span>}
+                  {s.depth && <span className="metric-tag">Depth: {s.depth}</span>}
+                  {s.technicalAccuracy > 0 && <span className="metric-tag" style={{ color: 'var(--amber)' }}>Accuracy: {s.technicalAccuracy}/10</span>}
+                  {s.tags.slice(0, 3).map(t => <span key={t} className="metric-tag" style={{ color: 'var(--cyan)' }}>{t}</span>)}
                 </div>
               </div>
             ))}
           </div>
-          <div style={{ padding: 20, textAlign: 'center', borderTop: '1px solid var(--line)' }}>
+
+          <div style={{ padding: 20, textAlign: 'center', borderTop: '1px solid var(--border)' }}>
             <button className="restart-btn" onClick={() => window.location.reload()}>Start New Interview</button>
           </div>
         </div>
@@ -1807,314 +2277,312 @@ export default function AriaV5() {
     </>
   );
 
-  // ── RENDER: Live Session ──────────────────────────────────────────────────
-  if (useFriendlyUI) {
-    return (
-      <FriendlyUI
-        phase={phase}
-        setPhase={setPhase}
-        candidateName={candidateName}
-        setCandidateName={setCandidateName}
-        cvText={cvText}
-        setCvText={setCvText}
-        jdText={jdText}
-        setJdText={setJdText}
-        cvFileName={cvFileName}
-        isParsing={isParsing}
-        setupErr={setupErr}
-        numQuestions={numQuestions}
-        setNumQuestions={setNumQuestions}
-        interviewDuration={interviewDuration}
-        setInterviewDuration={setInterviewDuration}
-        isCallActive={isCallActive}
-        callStatus={callStatus}
-        isMuted={isMuted}
-        micLevel={micLevel}
-        duration={duration}
-        isCallEnded={isCallEnded}
-        logs={logs}
-        scores={scores}
-        currentTopic={currentTopic}
-        interviewTimeLeft={interviewTimeLeft}
-        behavior={behavior}
-        usage={usage}
-        historySummary={historySummary}
-        strategy={strategy}
-        observerStatus={observerStatus}
-        silenceTimeLeft={silenceTimeLeft}
-        silenceDuration={silenceDurationRef.current}
-        warmupTurns={warmupTurns}
-        WARMUP_TURNS_REQUIRED={WARMUP_TURNS_REQUIRED}
-        handleCvFile={handleCvFile}
-        startCall={startCall}
-        toggleMute={toggleMute}
-        endCall={endCall}
-        computeVoiceCost={computeVoiceCost}
-        computeIntelCost={computeIntelCost}
-        ScoreBadge={ScoreBadge}
-        fmtTime={fmtTime}
-        PhaseDot={PhaseDot}
-        useFriendlyUI={useFriendlyUI}
-        setUseFriendlyUI={setUseFriendlyUI}
-      />
-    );
-  }
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER: LIVE SESSION
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const phases: { p: AppPhase; label: string }[] = [
+    { p: 'warmup', label: 'Warmup' },
+    { p: 'interview', label: 'Interview' },
+    { p: 'wrapup', label: 'Wrap-up' },
+    { p: 'closing', label: 'Closing' },
+  ];
+  const phaseOrder = phases.map(x => x.p);
+  const currentPhaseIdx = phaseOrder.indexOf(phase);
 
   return (
     <>
       <style>{CSS}</style>
-      <div className="noise" />
       <div className="live">
 
-        {/* LEFT PANEL */}
-        <div className="live-left">
-          <div className="agent-top">
-            <div className={`avatar ${isSpeaking ? 'speaking' : ''}`}>🎙️</div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontFamily: 'var(--serif)', fontSize: 20, fontWeight: 700 }}>Aria</div>
-              <div style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>v5 · RT-BRAIN</div>
+        {/* ── LEFT PANEL ── */}
+        <div className="left-panel">
+          <div className="agent-head">
+            <div className={`orb ${isAriaSpeaking ? 'speaking' : ''}`}>🎙</div>
+
+            <div>
+              <div style={{ fontFamily: 'var(--display)', fontSize: 18, fontWeight: 300, textAlign: 'center' }}>Aria</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--t3)', textAlign: 'center', letterSpacing: '.1em' }}>v6 · CONDUCTOR</div>
             </div>
 
-            <div className="status-pill" style={{ background: isSpeaking ? 'rgba(59,123,255,.12)' : 'rgba(255,255,255,.04)', color: isSpeaking ? '#60a5fa' : 'var(--text2)' }}>
-              {observerStatus === 'scoring' ? '⚡ Scoring...' : observerStatus === 'phasing' ? '🔄 Phase shift...' : callStatus}
+            <div className="status-chip" style={{
+              background: isAriaSpeaking ? 'rgba(61,123,255,.1)' : isConductorRunning ? 'rgba(167,139,250,.08)' : 'rgba(255,255,255,.04)',
+              color: isAriaSpeaking ? 'var(--blue2)' : isConductorRunning ? 'var(--violet)' : 'var(--t2)',
+            }}>
+              <div style={{ width: 5, height: 5, borderRadius: '50%', background: isAriaSpeaking ? 'var(--blue)' : isConductorRunning ? 'var(--violet)' : 'var(--t3)', flexShrink: 0, animation: (isAriaSpeaking || isConductorRunning) ? 'pulse 1s infinite' : 'none' }} />
+              {isAriaSpeaking ? 'Speaking...' : isConductorRunning ? 'Conductor running...' : callStatus}
             </div>
 
-            {silenceTimeLeft !== null && !isSpeaking && (
-              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
-                  <span>Silence</span><span>{(silenceTimeLeft / 1000).toFixed(1)}s</span>
+            {silenceLeft !== null && !isAriaSpeaking && (
+              <div className="silence-track">
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: 'var(--t3)', fontFamily: 'var(--mono)', marginBottom: 3 }}>
+                  <span>Silence</span><span>{(silenceLeft / 1000).toFixed(1)}s</span>
                 </div>
                 <div className="silence-bar">
-                  <div className="silence-fill" style={{ width: `${(silenceTimeLeft / silenceDurationRef.current) * 100}%`, background: silenceTimeLeft < 5000 ? 'var(--red)' : 'var(--blue)' }} />
+                  <div className="silence-fill" style={{
+                    width: `${(silenceLeft / SILENCE_MS) * 100}%`,
+                    background: silenceLeft < 5000 ? 'var(--red)' : silenceLeft < 10000 ? 'var(--amber)' : 'var(--blue)',
+                  }} />
                 </div>
               </div>
             )}
 
-            <div className="wave">
-              {waveHeights.map((h, i) => <div key={i} className="wbar" style={{ height: h, background: isSpeaking ? 'var(--blue)' : 'var(--line2)' }} />)}
+            <div className="waveform">
+              {waveHeights.map((h, i) => (
+                <div key={i} className="wbar" style={{
+                  height: h,
+                  background: isAriaSpeaking ? `rgba(61,123,255,${0.4 + (h / 40) * 0.6})` : `rgba(107,130,160,${0.2 + (h / 40) * 0.5})`,
+                }} />
+              ))}
             </div>
           </div>
 
-          {/* Architecture Display */}
-          <div style={{ margin: '8px', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden', flexShrink: 0 }}>
-            <div style={{ padding: '7px 12px', background: 'rgba(255,255,255,.02)', borderBottom: '1px solid var(--line)', fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)', letterSpacing: '.1em' }}>ARCHITECTURE</div>
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 8, background: isSpeaking ? 'rgba(59,123,255,.04)' : 'transparent' }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e66' }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, fontWeight: 600 }}>RT Actor (Brain)</div>
-                <div style={{ fontSize: 9, color: 'var(--text3)' }}>Full conversational autonomy</div>
+          <div className="left-scroll">
+            {/* Architecture Section */}
+            <div className="section">
+              <div className="section-hd">
+                <span className="section-title">Architecture</span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: isConductorRunning ? 'var(--violet)' : 'var(--t3)' }}>
+                  {isConductorRunning ? '● ACTIVE' : '○ IDLE'}
+                </span>
               </div>
-              <span className="arch-tag" style={{ background: 'rgba(34,197,94,.1)', color: '#22c55e' }}>BRAIN</span>
-            </div>
-            <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: observerStatus !== 'idle' ? 'rgba(192,132,252,.04)' : 'transparent' }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: observerStatus !== 'idle' ? '#c084fc' : 'var(--line2)', boxShadow: observerStatus !== 'idle' ? '0 0 8px #c084fc66' : 'none', transition: '.3s' }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, fontWeight: 600 }}>Observer (Enforcer)</div>
-                <div style={{ fontSize: 9, color: 'var(--text3)' }}>Score + phase only</div>
-              </div>
-              <span className="arch-tag" style={{ background: 'rgba(192,132,252,.1)', color: '#c084fc' }}>
-                {observerStatus === 'idle' ? 'IDLE' : observerStatus === 'scoring' ? 'SCORING' : 'PHASING'}
-              </span>
-            </div>
-
-            {/* Behavioral Intelligence */}
-            <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,.1)', borderTop: '1px solid var(--line)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)', fontWeight: 700 }}>BEHAVIORAL INTEL</div>
-                <div style={{ fontSize: 9, color: behavior.moodScore < 40 ? 'var(--green)' : behavior.moodScore > 60 ? 'var(--red)' : 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 800 }}>
-                  {observerStatus !== 'idle' ? 'ANALYZING...' : `ARIA: ${behavior.moodScore < 35 ? 'NICE' : behavior.moodScore > 65 ? 'STRICT' : 'NEUTRAL'}`}
+              <div style={{ padding: '8px 14px', borderBottom: '1px solid rgba(255,255,255,.04)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 6px rgba(74,222,128,.5)' }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600 }}>RT Actor</div>
+                  <div style={{ fontSize: 9, color: 'var(--t3)' }}>Voice · reads live brief</div>
                 </div>
+                <div style={{ fontSize: 8, fontFamily: 'var(--mono)', color: 'var(--green)', fontWeight: 700, background: 'rgba(74,222,128,.08)', padding: '2px 6px', borderRadius: 4 }}>VOICE</div>
               </div>
-
-              {/* Mood Meter */}
-              <div style={{ height: 4, background: 'var(--line)', borderRadius: 2, marginBottom: 10, position: 'relative', overflow: 'hidden' }}>
-                <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${behavior.moodScore}%`, background: `linear-gradient(90deg, #22c55e, #3b82f6 ${behavior.moodScore}%, transparent)`, transition: 'all 1s ease' }} />
-                <div style={{ position: 'absolute', left: '35%', top: 0, height: '100%', width: 1, background: 'rgba(255,255,255,.1)' }} />
-                <div style={{ position: 'absolute', left: '65%', top: 0, height: '100%', width: 1, background: 'rgba(255,255,255,.1)' }} />
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                <div className="card" style={{ padding: '5px 8px', gap: 2, background: 'rgba(255,255,255,.02)' }}>
-                  <div style={{ fontSize: 7, color: 'var(--text3)' }}>STYLE</div>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--cyan)' }}>{behavior.style.toUpperCase()}</div>
+              <div style={{ padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 7, height: 7, borderRadius: '50%', background: isConductorRunning ? 'var(--violet)' : 'var(--t3)', transition: 'all .3s', boxShadow: isConductorRunning ? '0 0 6px rgba(167,139,250,.5)' : 'none' }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600 }}>Conductor</div>
+                  <div style={{ fontSize: 9, color: 'var(--t3)' }}>Coverage · Score · Brief</div>
                 </div>
-                <div className="card" style={{ padding: '5px 8px', gap: 2, background: 'rgba(255,255,255,.02)' }}>
-                  <div style={{ fontSize: 7, color: 'var(--text3)' }}>SOFT SKILLS</div>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--amber)' }}>{behavior.softSkills}/10</div>
+                <div style={{ fontSize: 8, fontFamily: 'var(--mono)', color: isConductorRunning ? 'var(--violet)' : 'var(--t3)', fontWeight: 700, background: isConductorRunning ? 'rgba(167,139,250,.08)' : 'transparent', padding: '2px 6px', borderRadius: 4 }}>
+                  {isConductorRunning ? 'RUNNING' : 'IDLE'}
                 </div>
               </div>
             </div>
 
-            {/* Token Intel */}
-            <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,.15)', borderTop: '1px solid var(--line)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)', fontWeight: 700 }}>RT TOKEN INTEL</div>
-                <div style={{ fontSize: 11, fontWeight: 800, color: '#22c55e', fontFamily: 'var(--mono)' }}>${computeVoiceCost(usage).toFixed(4)}</div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                <div style={{ background: 'rgba(255,255,255,.02)', padding: '5px 8px', borderRadius: 4, border: '1px solid var(--line2)' }}>
-                  <div style={{ fontSize: 7, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>INPUT AUDIO</div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--cyan)' }}>{usage.rtAudioIn.toLocaleString()}</div>
+            {/* Conductor Logs */}
+            {conductorLog.length > 0 && (
+              <div className="section">
+                <div className="section-hd">
+                  <span className="section-title">Conductor Log</span>
                 </div>
-                <div style={{ background: 'rgba(255,255,255,.02)', padding: '5px 8px', borderRadius: 4, border: '1px solid var(--line2)' }}>
-                  <div style={{ fontSize: 7, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>INPUT TEXT</div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--blue)' }}>{usage.rtTextIn.toLocaleString()}</div>
-                </div>
-                <div style={{ background: 'rgba(255,255,255,.02)', padding: '5px 8px', borderRadius: 4, border: '1px solid var(--line2)', gridColumn: 'span 2' }}>
-                  <div style={{ fontSize: 7, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>OUTPUT AUDIO (REALTIME)</div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--violet)' }}>{usage.rtAudioOut.toLocaleString()}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Context Memory */}
-            {historySummary && (
-              <div className="fade" style={{ padding: '10px 12px', background: 'rgba(59,123,255,.03)', borderTop: '1px solid var(--line)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
-                  <div className="dot-pulse" style={{ background: 'var(--blue)', width: 6, height: 6 }} />
-                  <div style={{ fontSize: 9, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700 }}>CONTEXT MEMORY</div>
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--text2)', fontStyle: 'italic', lineHeight: 1.4, borderLeft: '1px solid var(--line2)', paddingLeft: 8 }}>
-                  "{historySummary}"
-                </div>
+                {conductorLog.map(l => (
+                  <div key={l.id} className="conductor-row">
+                    <div className="clog-dot" style={{ background: l.status === 'done' ? 'var(--green)' : l.status === 'error' ? 'var(--red)' : 'var(--amber)' }} />
+                    <div style={{ fontSize: 9, color: l.status === 'error' ? 'var(--red)' : 'var(--t2)', fontFamily: 'var(--mono)', flex: 1, lineHeight: 1.4 }}>{l.msg}</div>
+                  </div>
+                ))}
               </div>
             )}
-          </div>
 
-          {/* Strategy Display */}
-          {strategy && (
-            <div style={{ margin: '0 8px 8px', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden', flexShrink: 0 }}>
-              <div style={{ padding: '7px 12px', background: 'rgba(255,255,255,.02)', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)', letterSpacing: '.1em' }}>INTERVIEW STRATEGY</span>
-                <span style={{ fontSize: 9, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{scores.length}/{numQuestions} scored</span>
+            {/* Behavior */}
+            <div className="section">
+              <div className="section-hd">
+                <span className="section-title">Behavioral Intel</span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: behavior.mood === 'nice' ? 'var(--green)' : behavior.mood === 'strict' ? 'var(--red)' : 'var(--blue2)', fontWeight: 700 }}>
+                  ARIA: {behavior.mood.toUpperCase()}
+                </span>
               </div>
-              {strategy.topics.map((t, i) => (
-                <div key={i} style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,.03)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: t.source === 'cv' ? 'var(--cyan)' : 'var(--violet)', flexShrink: 0 }} />
-                  <div style={{ flex: 1, fontSize: 10, color: 'var(--text2)' }}>{t.name}</div>
-                  <span style={{ fontSize: 8, fontFamily: 'var(--mono)', color: t.source === 'cv' ? 'var(--cyan)' : 'var(--violet)', fontWeight: 700 }}>{t.source.toUpperCase()}</span>
+              <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div style={{ background: 'rgba(255,255,255,.03)', border: '1px solid var(--border)', borderRadius: 7, padding: '6px 8px' }}>
+                  <div style={{ fontSize: 7, color: 'var(--t3)', fontFamily: 'var(--mono)', marginBottom: 3 }}>STYLE</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--cyan)' }}>{behavior.style.toUpperCase()}</div>
                 </div>
-              ))}
+                <div style={{ background: 'rgba(255,255,255,.03)', border: '1px solid var(--border)', borderRadius: 7, padding: '6px 8px' }}>
+                  <div style={{ fontSize: 7, color: 'var(--t3)', fontFamily: 'var(--mono)', marginBottom: 3 }}>SOFT SKILLS</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--amber)' }}>{behavior.softSkills}/10</div>
+                </div>
+              </div>
             </div>
-          )}
 
-          {/* Intel Log */}
-          {intelLog.length > 0 && (
-            <div className="intel-box" style={{ flex: 1, overflowY: 'auto' }}>
-              <div className="intel-hd"><span style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>OBSERVER LOG</span></div>
-              {intelLog.map(log => (
-                <div key={log.id} className="intel-row">
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: log.status === 'done' ? 'var(--green)' : log.status === 'error' ? 'var(--red)' : 'var(--amber)', flexShrink: 0 }} />
-                  <div style={{ fontSize: 10, color: log.status === 'error' ? 'var(--red)' : 'var(--text2)' }}>{log.message}</div>
+            {/* Topics */}
+            {topics.length > 0 && (
+              <div className="section">
+                <div className="section-hd">
+                  <span className="section-title">Topic Roadmap</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--amber)' }}>
+                    {coveredTopics.length}/{topics.length}
+                  </span>
                 </div>
-              ))}
+                {topics.map((t, i) => {
+                  const isActive = t.status === 'active';
+                  const isDone = t.status === 'covered' || t.status === 'exhausted';
+                  const isFailed = t.status === 'failed';
+
+                  return (
+                    <div key={i} className={`topic-row ${isActive ? 'active' : ''}`}>
+                      <div className="topic-icon" style={{
+                        background: isDone ? 'rgba(74,222,128,.1)' : isActive ? 'rgba(61,123,255,.12)' : isFailed ? 'rgba(248,113,113,.1)' : 'rgba(255,255,255,.04)',
+                        color: isDone ? 'var(--green)' : isActive ? 'var(--blue2)' : isFailed ? 'var(--red)' : 'var(--t3)',
+                      }}>
+                        {isDone ? '✓' : isActive ? '→' : isFailed ? '✗' : `${i + 1}`}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, fontWeight: isActive ? 600 : 400, color: isDone ? 'var(--t3)' : isActive ? 'var(--t1)' : 'var(--t2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {t.name}
+                        </div>
+                        <div style={{ display: 'flex', gap: 5, marginTop: 2, alignItems: 'center' }}>
+                          <span style={{ fontSize: 7, fontFamily: 'var(--mono)', color: t.source === 'profile' ? 'var(--amber)' : t.source === 'cv' ? 'var(--cyan)' : 'var(--violet)', fontWeight: 700 }}>{t.source.toUpperCase()}</span>                          {isActive && <span style={{ fontSize: 7, fontFamily: 'var(--mono)', color: 'var(--t3)' }}>{t.turnCount}/{MAX_TOPIC_TURNS} turns</span>}
+                          {t.score !== undefined && <span style={{ fontSize: 7, fontFamily: 'var(--mono)', color: scoreColor(t.score), fontWeight: 700 }}>{t.score}/10</span>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Token usage */}
+            <div className="section">
+              <div className="section-hd">
+                <span className="section-title">Cost</span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--green)', fontWeight: 700 }}>${computeCost(usage).toFixed(4)}</span>
+              </div>
+              <div style={{ padding: '8px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
+                {[
+                  ['RT Audio In', usage.rtAudioIn, 'var(--cyan)'],
+                  ['RT Audio Out', usage.rtAudioOut, 'var(--violet)'],
+                  ['RT Text', usage.rtTextIn + usage.rtTextOut, 'var(--blue2)'],
+                  ['Conductor', usage.conductorIn + usage.conductorOut, 'var(--amber)'],
+                ].map(([label, val, color]) => (
+                  <div key={label as string} style={{ background: 'rgba(255,255,255,.02)', border: '1px solid var(--border)', borderRadius: 5, padding: '5px 7px' }}>
+                    <div style={{ fontSize: 7, color: 'var(--t3)', fontFamily: 'var(--mono)' }}>{label as string}</div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: color as string }}>{(val as number).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          )}
+          </div>
 
           <div className="controls">
-            <button className="btn btn-mute" onClick={toggleMute}>{isMuted ? '🔇 Unmute' : '🎤 Mute'}</button>
-            <button className="btn btn-end" onClick={endCall}>End Interview</button>
+            <button className="btn btn-mute" onClick={toggleMute}>
+              {isMuted ? '🔇' : '🎤'} {isMuted ? 'Unmute' : 'Mute'}
+            </button>
+            <button className="btn btn-end" onClick={endCall}>End</button>
           </div>
         </div>
 
-        {/* CENTER PANEL */}
-        <div className="live-center">
-          <div className="phase-strip">
-            <div className="phase-flow">
-              {(['warmup', 'interview', 'wrapup', 'closing'] as AppPhase[]).map((p, i) => (
-                <Fragment key={p}>
-                  {i > 0 && <div className="phase-sep" />}
-                  <PhaseDot phase={p} current={phase} label={p.charAt(0).toUpperCase() + p.slice(1)} />
-                </Fragment>
-              ))}
+        {/* ── CENTER PANEL ── */}
+        <div className="center-panel">
+          <div className="center-top">
+            {/* Phase dots */}
+            <div className="phase-dots">
+              {phases.map(({ p, label }, i) => {
+                const idx = phaseOrder.indexOf(p);
+                const done = currentPhaseIdx > idx;
+                const active = currentPhaseIdx === idx;
+                return (
+                  <Fragment key={p}>
+                    {i > 0 && <div className="pdot-sep" />}
+                    <div className="pdot">
+                      <div className="pdot-circle" style={{
+                        background: active ? 'var(--blue)' : done ? 'var(--green)' : 'var(--border2)',
+                        boxShadow: active ? '0 0 8px rgba(61,123,255,.5)' : done ? '0 0 5px rgba(74,222,128,.3)' : 'none',
+                      }} />
+                      <div className="pdot-label" style={{ color: active ? 'var(--blue2)' : done ? 'var(--green)' : 'var(--t3)' }}>{label}</div>
+                    </div>
+                  </Fragment>
+                );
+              })}
             </div>
+
+            {/* Right side info */}
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               {phase === 'warmup' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg3)', border: '1px solid var(--line)', padding: '3px 10px', borderRadius: 6 }}>
-                  <span style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>WARMUP</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{warmupTurns}</span>
-                  <span style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>/{WARMUP_TURNS_REQUIRED}</span>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--amber)', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.2)', padding: '3px 10px', borderRadius: 6 }}>
+                  Warmup {warmupTurns}/{WARMUP_HARD_LIMIT}
                 </div>
               )}
               {phase === 'interview' && (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg3)', border: '1px solid var(--line)', padding: '3px 10px', borderRadius: 6 }}>
-                    <span style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>SCORED</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{scores.length}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>/{numQuestions}</span>
+                  {activeTopicName && (
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--t3)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      → {activeTopicName}
+                    </div>
+                  )}
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 600, color: timerColor }}>
+                    {fmtTime(interviewTimeLeft)}
                   </div>
-                  <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: timerColor }}>{fmtTime(interviewTimeLeft)}</div>
                 </>
               )}
+              {phase === 'wrapup' && (
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--cyan)', background: 'rgba(56,189,248,.08)', border: '1px solid rgba(56,189,248,.2)', padding: '3px 10px', borderRadius: 6 }}>
+                  Wrapup {wrapupTurns}/{WRAPUP_HARD_LIMIT}
+                </div>
+              )}
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--t3)' }}>{fmtTime(duration)}</div>
             </div>
-          </div>
-
-          <div className="center-head">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Live Session · {candidateName || 'Candidate'}</div>
-              <button onClick={() => setUseFriendlyUI(true)} style={{ background: 'var(--blue)', color: 'white', border: 'none', padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer' }}>PREMIUM UI</button>
-            </div>
-            {avgScore > 0 && <div style={{ fontSize: 12, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>Avg: {avgScore.toFixed(1)}</div>}
           </div>
 
           <div className="center-body">
+            {/* Call ended overlay */}
             {isCallEnded && (
-              <div className="fade" style={{ position: 'absolute', inset: 0, zIndex: 10, background: 'rgba(7,11,18,.92)', backdropFilter: 'blur(10px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 40, textAlign: 'center' }}>
-                <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>✅</div>
+              <div className="end-overlay">
+                <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(74,222,128,.08)', border: '1px solid rgba(74,222,128,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>✓</div>
                 <div>
-                  <h2 style={{ fontFamily: 'var(--serif)', fontSize: 26, fontWeight: 700, marginBottom: 8 }}>Interview Complete</h2>
-                  <p style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6 }}>Click below to view your detailed performance report.</p>
+                  <div style={{ fontFamily: 'var(--display)', fontSize: 26, fontWeight: 300, marginBottom: 8 }}>Interview Complete</div>
+                  <div style={{ color: 'var(--t2)', fontSize: 13, lineHeight: 1.6 }}>
+                    {scores.length} topics evaluated · avg score {avgScore > 0 ? avgScore.toFixed(1) : '—'}
+                  </div>
                 </div>
-                <button className="start-btn" style={{ maxWidth: 260 }} onClick={() => { phaseRef.current = 'report'; setPhase('report'); }}>View Report</button>
+                <button className="restart-btn" onClick={() => { phaseRef.current = 'report'; setPhase('report'); }}>
+                  View Report →
+                </button>
               </div>
             )}
+
             {activeLogs.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)', fontFamily: 'var(--mono)', fontSize: 12 }}>
-                {isSpeaking ? '🎙️ Aria is speaking...' : 'Waiting to begin...'}
+              <div style={{ textAlign: 'center', padding: 30, color: 'var(--t3)', fontFamily: 'var(--mono)', fontSize: 12 }}>
+                {isAriaSpeaking ? '● Aria is speaking...' : 'Waiting to begin...'}
               </div>
-            ) : activeLogs.slice(-16).map((log, i) => (
-              <div key={log.id || i} className="log-entry fade">
-                <div className={`log-av ${log.role}`}>{log.role === 'ai' ? 'AI' : 'You'}</div>
-                <div className="log-text">{log.text || <span style={{ color: 'var(--text3)' }}>...</span>}</div>
+            ) : activeLogs.slice(-20).map((log, i) => (
+              <div key={log.id || i} className="msg">
+                <div className={`msg-av ${log.role}`}>{log.role === 'ai' ? 'AI' : 'You'}</div>
+                <div className={`msg-text ${log.role}`}>
+                  {log.text || <span style={{ color: 'var(--t3)' }}>…</span>}
+                </div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* RIGHT PANEL */}
-        <div className="live-right">
-          <div style={{ padding: '18px 18px 10px', fontSize: 14, fontWeight: 600 }}>Live Scores</div>
-
-          {lastScore && (
-            <div className="score-card fade" style={{ borderColor: 'var(--amber)33', background: 'var(--amber)04' }}>
-              <div style={{ fontSize: 9, color: 'var(--amber)', fontFamily: 'var(--mono)', fontWeight: 700 }}>LATEST</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>{lastScore.questionSummary || lastScore.question}</div>
-                <ScoreBadge score={lastScore.score} />
-              </div>
-              {lastScore.logicEvaluation && <div style={{ fontSize: 10, color: 'var(--text3)' }}>{lastScore.logicEvaluation}</div>}
-              {lastScore.missedOpportunities && lastScore.missedOpportunities.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 700, marginBottom: 3 }}>MISSED:</div>
-                  {lastScore.missedOpportunities.slice(0, 2).map((o, idx) => <div key={idx} style={{ fontSize: 9, color: 'var(--text3)', display: 'flex', gap: 4 }}><span style={{ color: 'var(--amber)' }}>•</span>{o}</div>)}
-                </div>
-              )}
-            </div>
-          )}
+        {/* ── RIGHT PANEL ── */}
+        <div className="right-panel">
+          <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Live Scores</div>
+            {scores.length > 0 && (
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: scoreColor(avgScore), fontWeight: 700 }}>avg {avgScore.toFixed(1)}</div>
+            )}
+          </div>
 
           {scores.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Scores appear after each answer...</div>
-          ) : [...scores].reverse().slice(0, 8).map((s, i) => (
-            <div className="score-card" key={i}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <div style={{ fontSize: 11, color: 'var(--text2)', flex: 1 }}>{(s.questionSummary || s.question).slice(0, 45)}...</div>
-                <ScoreBadge score={s.score} />
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--t3)', fontSize: 12, fontFamily: 'var(--mono)' }}>
+              Scores appear after each topic...
+            </div>
+          ) : [...scores].reverse().map((s, i) => (
+            <div key={i} className="score-item fade-in">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, flex: 1, color: 'var(--t1)' }}>{s.topic}</div>
+                <div className="score-badge" style={{ background: scoreColor(s.score) + '18', color: scoreColor(s.score), border: `1px solid ${scoreColor(s.score)}30` }}>
+                  {s.score}/10
+                </div>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>{s.answerSummary.slice(0, 70)}...</div>
+              {s.answerSummary && (
+                <div style={{ fontSize: 10, color: 'var(--t3)', lineHeight: 1.5 }}>{s.answerSummary.slice(0, 80)}...</div>
+              )}
+              {s.logicEvaluation && (
+                <div style={{ fontSize: 9, color: 'var(--t3)', fontStyle: 'italic', lineHeight: 1.4 }}>{s.logicEvaluation}</div>
+              )}
               <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                {s.confidence && <span className="metric-pill">Conf: {s.confidence}</span>}
-                {s.clarity && <span className="metric-pill">Clarity: {s.clarity}</span>}
-                {s.topic && <span className="metric-pill" style={{ color: 'var(--cyan)' }}>{s.topic.slice(0, 15)}</span>}
+                {s.confidence && <span className="metric-tag">Conf: {s.confidence}</span>}
+                {s.clarity && <span className="metric-tag">Clarity: {s.clarity}</span>}
+                {s.depth && <span className="metric-tag">{s.depth}</span>}
               </div>
             </div>
           ))}
