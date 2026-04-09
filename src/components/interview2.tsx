@@ -532,7 +532,7 @@ export default function AriaV5() {
       const raw = await callMini(
         `You are a senior technical interviewer preparing for an interview.
 
-  CV Summary: ${cvSummaryRef.current}
+  Full CV: ${cvTextRef.current.slice(0, 4000)}
   Job Description: ${jdTextRef.current.slice(0, 1500)}
   Total Questions Needed: ${numQuestionsRef.current}
 
@@ -1129,8 +1129,23 @@ export default function AriaV5() {
     if (cvText) {
       try {
         const summary = await callMini(
-          `Create a concise interviewer briefing from this CV. Include: full name, current role, years of experience, top technical skills, notable projects/achievements. Max 200 words.\n\nCV:\n${cvText}`,
-          'CV analyst. Flowing prose. No bullets.', usageRef
+          `Compress this CV into a high-density technical profile.
+          STRICT RULES:
+          - NO grammar, NO filler words, NO professional bio-talk.
+          - USE "Telegram Style" (dense, technical, data-only).
+          - INCLUDE ALL: Projects, Work Experience, Education, Certifications.
+          - KEEP: Every tech stack mentioned, specific tool names, and numerical metrics.
+          - FORMAT: 
+            [NAME]
+            [SUMMARY: Role | Years Exp]
+            [SKILLS: List all Tech/Tools]
+            [WORK: Comp | Role | Dates | Specific achievements + tech used]
+            [PROJECTS: Project Name | tech used | outcome]
+            [EDUCATION: Degree | Univ | Date]
+          
+          CV TEXT:
+          ${cvText}`,
+          'Technical Data Compressor. High density. Data-only.', usageRef
         );
         if (summary) { cvSummaryRef.current = summary; setCvSummary(summary); }
         updateUsage();
