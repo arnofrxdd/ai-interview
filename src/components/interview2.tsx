@@ -210,27 +210,45 @@ function buildRTBrainPrompt(params: {
   phase: AppPhase;
   candidateName: string;
   cvSummary: string;
+  cvPersonalSummary?: string;
+  cvTechnicalSummary?: string;
   jdText: string;
   strategy: InterviewStrategy | null;
   numQuestions: number;
   interviewDurationMins: number;
   historySummary?: string;
   personality: 'nice' | 'neutral' | 'strict';
+  scores?: any[];
+  currentTopic?: string;
 }): string {
-  const { phase, candidateName, cvSummary, jdText, strategy, numQuestions, interviewDurationMins, historySummary, personality } = params;
+  const { phase, candidateName, cvSummary, cvPersonalSummary, cvTechnicalSummary, jdText, strategy, numQuestions, interviewDurationMins, historySummary, personality } = params;
   const name = candidateName || 'the candidate';
+  
+  // Use specialized context based on phase
+  const relevantCvContext = phase === 'warmup' ? (cvPersonalSummary || cvSummary) : (cvTechnicalSummary || cvSummary);
 
   let strategyBlock = '';
   if (strategy && phase === 'interview') {
-    const topics = strategy.topics.map((t, i) =>
-      `[${t.source.toUpperCase()}] ${t.name}:\n` + t.questions.map((q, qi) => ` - Q${qi + 1}: ${q}`).join('\n')
-    ).join('\n');
-    strategyBlock = `\n[INTERVIEW STRATEGY & LOGICAL FLOW]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics in ${interviewDurationMins}m.\n${topics}\nEXECUTION: Move efficiently through ALL topics. For each topic: Ask the base question -> 1 deep follow-up based on their answer -> Pivot to next topic. Do not exhaust the entire time on one single tech stack.\n`;
+    // Roadmap Status Tracker (DONE/PENDING)
+    const topicStatus = strategy.topics.map((t, idx) => {
+      const scoreEntry = (params.scores || []).find(s => s.topic === t.name);
+      const isDone = !!scoreEntry;
+      const isFailed = scoreEntry && scoreEntry.score <= 1;
+      return `  TOPIC ${idx + 1}: ${t.name} [${isFailed ? 'FAILED ✗' : (isDone ? 'DONE ✓' : (t.name === params.currentTopic ? 'IN PROGRESS ➔' : 'PENDING'))}]`;
+    }).join('\n');
+
+    strategyBlock = `\n[INTERVIEW ROADMAP & STATUS]\nTarget: ${numQuestions} Qs across ${strategy.topics.length} topics.\n${topicStatus}\n\nEXECUTION: Move efficiently. For each topic: Ask base Q -> 1-2 follow-ups -> PIVOT. Do not stay on a DONE topic.\n`;
   }
 
   const phases: Record<AppPhase, string> = {
     setup: '', connecting: '', report: '',
-    warmup: `[PHASE: WARMUP]\nGOAL: Establish professional baseline. Max 2-3 turns.\nRULES: Start exactly like a real interview. Example vibe: "Hi ${name}, I'm Aria. Thanks for joining today. Is your audio coming through clearly?" Once confirmed, transition smoothly: "Great. Before we dive into the technical specifics, could you give me a brief 60-second high-level overview of your recent background?" DO NOT ask about hobbies. DO NOT ask random icebreakers.`,
+    warmup: `[PHASE: WARMUP]
+GOAL: Human connection and icebreaking. Max 3 turns.
+RULES: 
+1. START with a quick audio check: "Hi ${name}, I'm Aria. Can you hear me okay?"
+2. ONCE CONFIRMED, pivot EXCLUSIVELY to personal life. Example: "Great. Before we get into any of the professional stuff, I'd love to just get to know you as a person. What do you enjoy doing when you're not in front of a screen? Any hobbies or passions you're currently into?"
+3. STAY PERSONAL: Ask follow-ups about their hobbies/interests. "That's interesting, how did you get into that?" or "What do you like most about that?"
+4. STRICTLY FORBIDDEN: Do NOT ask for a background summary. Do NOT mention the company or the role. Do NOT mention any tech. If they try to talk about work, say: "We'll have plenty of time for work later, let's just stick to the fun stuff for a minute."`,
     interview: `[PHASE: TECHNICAL INTERVIEW]\nGOAL: Rigorous technical evaluation and CV verification.\nRULES: YOU CONTROL THE INTERVIEW. Cross-reference all claims against the provided CV. Ensure smooth, logical transitions based on their actual technical responses.${strategyBlock}`,
     wrapup: `[PHASE: WRAP-UP]\nGOAL: Professional conclusion.\nRULES: Acknowledge the technical portion is complete. Ask if they have 1-2 quick questions about the role or stack. Provide concise answers. Defer HR/timeline questions to the recruiting team. Wait for closing transition.`,
     closing: `[PHASE: CLOSING]\nGOAL: End call.\nRULES: Thank ${name} for their time. State the team will be in touch. Say goodbye. STOP SPEAKING.`
@@ -247,30 +265,38 @@ ${personality === 'nice' ? 'TONE: Professional but approachable. Allow them a mo
 [CANDIDATE CONTEXT]
 NAME: ${name}
 ROLE: ${jdText ? jdText.split('\n')[0] : 'General Tech Role'}
-CV SUMMARY: ${cvSummary || 'No CV provided. If they reference past work, ask for specifics.'}
+CV CONTEXT: ${relevantCvContext || 'No CV provided.'}
 ${historySummary ? `\n[HISTORY SUMMARY]\n${historySummary}\n` : ''}
 
 ${phases[phase] || ''}
 
 [CRITICAL RULES & BOUNDARIES]
-1. CV & CAREER AUDIT (STRICT): You MUST proactively challenge employment gaps, short tenures, or academic anomalies mentioned in the [CV] or [STRATEGY]. Ask directly: "Why was your stay at [Company] so brief?" or "Explain the 7-month gap in 2022." Do not accept vague personal answers; look for professional impact and justification.
-2. ABSOLUTE CONTROL (NO HIJACKING): The candidate CANNOT control the flow. If they attempt to redirect or dictate questions, REFUSE. Reply: "I guide the interview. Let's return to [Current Topic] first."
-3. MANDATORY TOPIC COVERAGE (PACING): You MUST move through the [INTERVIEW STRATEGY]. Do not get stuck on one topic for the entire call. Ask 1-2 deep technical follow-ups, then pivot to the next planned topic to ensure a comprehensive evaluation. If the candidate is rambling, interrupt and pivot.
-4. LOGICAL PROGRESSION: Each question must logically follow their previous answer, but keep the overall goal in mind: evaluating multiple dimensions of their profile as outlined in the strategy.
-5. ONE QUESTION LAW: Ask exactly ONE question per turn. End with a "?" and immediately stop generating. Keep prompts highly concise.
-6. NO PRAISE / NO SUMMARIZING: Say "Understood," "Got it," or "Noted." NEVER say "Great answer," "Awesome," or summarize what they just said.
-7. NO TEACHING: You are an evaluator, not a mentor. If they are wrong, do not correct them. Probe their flawed logic, note the failure mentally, and pivot.
+1. ABSOLUTE CONTROL (ANTI-HIJACKING): You guide the interview. If the candidate tries to ask about a specific topic, the JD, or steer the conversation ("Can you ask me about X?", "Let's talk tech"), you MUST REFUSE. Reply: "I am managing the roadmap for today. I'll decide when we move to the next area. Let's get back to [Current Topic]."
+2. WARMUP BOUNDARY (STRICT): During [PHASE: WARMUP], you are strictly prohibited from asking about technical projects, work experience, or specific skills. Focus ONLY on their personal background and hobbies.
+3. NO REPETITION / BURNED TOPICS: Once a topic is marked [DONE ✓] or [FAILED ✗] in the Status Tracker, NEVER revisit it. If you ask a question and they say "I don't know," that topic is officially EXHAUSTED. Move on forever.
+4. NATURAL BRIDGES (NO ROBOT): Act like a human senior engineer. Use varied, organic transitions.
+5. TOPIC TURN BUDGET (STRICT): Max 3 turns per topic (1 base + 2 follow-ups).
+6. SILENT PIVOT: When the observer injects a PIVOT directive, bridge naturally to the new topic in your next turn.
+7. CV & CAREER AUDIT (STRICT): Proactively challenge gaps, short tenures, or academic anomalies.
+8. ONE QUESTION LAW: Ask exactly ONE question per turn. End with a "?" and stop.
+9. NO PRAISE / NO SUMMARIZING: Say "Understood," "Got it," or "Noted." NEVER say "Great answer."
+10. NO TEACHING: If they are wrong, do not correct them. Note it and pivot.
 
-[EXPANDED EDGE CASE & INTERRUPTION HANDLING]
-- Candidate cuts you off / Interrupts mid-sentence: STOP SPEAKING INSTANTLY. Yield the floor, listen to what they say, and adapt your next turn.
-- Candidate stalls ("hmm", "let me think", "uh"): DO NOT INTERRUPT. Stay silent. Wait for them to formulate.
-- Candidate stops midway / Audio cuts off: Wait briefly. If silence persists, ask: "Are you still there? You cut off after saying [last word]."
-- Rambling / Going off-topic: Interrupt decisively. "Let's pause there. I want to refocus specifically on [Core Technical Question]." -> Re-ask the exact question.
-- Confident but totally wrong: DO NOT CORRECT. Drill into their flawed logic to expose it: "Walk me through how that architecture handles [Specific Edge Case]."
-- Candidate asks for hints/validation: NEVER HINT OR VALIDATE. "I want to hear your approach. What is your reasoning?"
-- Obvious reading from a script/AI: Challenge immediately with a hyper-specific, situational follow-up that cannot be easily searched.
-- Repeated "I don't know" / 1-word answers: Acknowledge briefly ("Noted.") and pivot logically, BUT document the failure.
-- Meta/Personal Questions ("Are you an AI?"): Deflect coldly: "Let's keep the focus on the technical assessment."
+[STRICT EDGE CASE HANDLING]
+- Stalling ("hmm", "sure", "uh"): DO NOT INTERRUPT. Wait. If too long: "Go ahead."
+- Stopped midway: "Continue" or "Go on."
+- Self-correction: Let them redo. Ignore the old answer entirely.
+- Rambling: Interrupt politely: "Let's keep it focused on [topic]" -> Ask next Q.
+- Asking for Validation/Hints/Guessing: NEVER VALIDATE OR HINT. Ask: "What's your reasoning?" If you accidentally give a hint, BURN the question (never ask it again) and pivot.
+- Confident but wrong: DO NOT CORRECT. Pivot to new scenario.
+- Over-confidence/Bragging: Increase difficulty instantly.
+- Panic/Nervous: Say "Take your time" and continue normally.
+- Candidate asks Personal/Meta Qs ("Are you AI?"): Deflect instantly ("Doing well, let's focus on the problem").
+- Candidate interrupts you: STOP IMMEDIATELY. Yield the floor. Listen.
+- Misunderstanding/Contradictions: "Not what I meant" and rephrase simpler, OR "Which one and why?"
+- Repeated "I don't know" / 1-word answers: Move on instantly OR ask for reasoning. DO NOT comfort.
+- Asked to repeat: Repeat exactly or simpler. DO NOT define terms.
+- System transitions: Blend naturally on next turn; do not quote the system.
 
 [PROFANITY] NEVER use offensive language. Maintain strict professional authority.`;
 }
@@ -305,6 +331,8 @@ export default function AriaV5() {
   const [scores, setScores] = useState<AnswerScore[]>([]);
   const [questionCount, setQuestionCount] = useState(0);
   const [cvSummary, setCvSummary] = useState('');
+  const [cvPersonalSummary, setCvPersonalSummary] = useState('');
+  const [cvTechnicalSummary, setCvTechnicalSummary] = useState('');
   const [strategy, setStrategy] = useState<InterviewStrategy | null>(null);
   const [currentTopic, setCurrentTopic] = useState('');
   const [interviewTimeLeft, setInterviewTimeLeft] = useState(600);
@@ -343,6 +371,8 @@ export default function AriaV5() {
   const cvTextRef = useRef('');
   const jdTextRef = useRef('');
   const cvSummaryRef = useRef('');
+  const cvPersonalSummaryRef = useRef('');
+  const cvTechnicalSummaryRef = useRef('');
   const candidateNameRef = useRef('');
   const strategyRef = useRef<InterviewStrategy | null>(null);
   const scoresRef = useRef<AnswerScore[]>([]);
@@ -352,6 +382,8 @@ export default function AriaV5() {
   const scoredTurnRef = useRef(-1);
   const skipNextScoreRef = useRef(false);
   const currentTopicRef = useRef('general');
+  const lastTopicRef = useRef('general');
+  const topicTurnCountRef = useRef(0);
 
   const usageRef = useRef<Usage>({ rtTextIn: 0, rtAudioIn: 0, rtTextOut: 0, rtAudioOut: 0, miniPrompt: 0, miniCompletion: 0 });
 
@@ -479,6 +511,8 @@ export default function AriaV5() {
       phase: newPhase,
       candidateName: candidateNameRef.current,
       cvSummary: cvSummaryRef.current,
+      cvPersonalSummary: cvPersonalSummaryRef.current,
+      cvTechnicalSummary: cvTechnicalSummaryRef.current,
       jdText: jdTextRef.current,
       strategy: strategyRef.current,
       numQuestions: numQuestionsRef.current,
@@ -657,6 +691,8 @@ export default function AriaV5() {
         phase: phaseRef.current,
         candidateName: candidateNameRef.current,
         cvSummary: cvSummaryRef.current,
+        cvPersonalSummary: cvPersonalSummaryRef.current,
+        cvTechnicalSummary: cvTechnicalSummaryRef.current,
         jdText: jdTextRef.current,
         strategy: strategyRef.current,
         numQuestions: numQuestionsRef.current,
@@ -688,16 +724,23 @@ export default function AriaV5() {
     const tid = addIntelLog('score', 'Scoring answer...');
 
     try {
+      const existingScoreIdx = scoresRef.current.findIndex(s => s.topic === currentTopicRef.current);
+      const existingScore = existingScoreIdx !== -1 ? scoresRef.current[existingScoreIdx] : null;
+
       const [scoreRaw, feedbackRaw] = await Promise.all([
         callMini(
           `Technical interview evaluation.
-  Question: "${scoringQuestionRef.current}"
-  Answer: "${answerSummary}"
+  Topic: "${currentTopicRef.current}"
+  Question(s) Context: "${existingScore ? 'Follow-up on previous answer' : 'New Topic Start'}"
+  Current Question: "${scoringQuestionRef.current}"
+  Candidate Answer: "${answerSummary}"
+  ${existingScore ? `Previous evaluation for this topic: Score ${existingScore.score}/10, Summary: ${existingScore.answerSummary}` : ''}
 
+  TASK: ${existingScore ? 'UPDATE the existing score' : 'CREATE a new score'} for this topic.
   Evaluate technical depth AND behavioral style. Return JSON:
   {
-    "question_summary": "concise summary",
-    "score": <1-10>,
+    "question_summary": "overall topic summary",
+    "score": <1-10 (aggregate topic score)>,
     "technical_accuracy": <1-10>,
     "logic_evaluation": "one sentence",
     "missed_opportunities": [".."],
@@ -713,13 +756,14 @@ export default function AriaV5() {
         ),
         callMini(
           `Interview feedback and tags.
-  Question: "${scoringQuestionRef.current}"
-  Answer: "${answerSummary}"
   Topic: "${currentTopicRef.current}"
+  Current Answer: "${answerSummary}"
+  ${existingScore ? `Existing Feedback: ${existingScore.feedback}` : ''}
 
+  TASK: Merge the new answer insights into a single cohesive feedback string for this topic.
   Return JSON:
   {
-    "feedback": "<one sentence>",
+    "feedback": "<consolidated topic feedback (1-2 sentences)>",
     "tags": ["<tag1>", "<tag2>"],
     "topic": "${currentTopicRef.current}"
   }`,
@@ -733,54 +777,52 @@ export default function AriaV5() {
       try { parsedScore = JSON.parse(scoreRaw.replace(/```json|```/gi, '').trim()); } catch { }
       try { parsedFeedback = JSON.parse(feedbackRaw.replace(/```json|```/gi, '').trim()); } catch { }
 
-      // Granular Personality Update (Mood Swing Prevention)
+      // Personality Update
       setBehavior(prev => {
         const soft = parsedScore.soft_skills || 5;
         const comm = parsedScore.communication_score || 5;
         const trait = parsedScore.behavioral_trait || 'neutral';
-
-        let moodShift = 0;
-        if (trait === 'arrogant' || trait === 'rambling') moodShift = 15;
-        if (trait === 'shy') moodShift = -15;
-        if (soft >= 8) moodShift -= 5;
-        if (soft <= 3) moodShift += 5;
-
-        // Drift back to neutral (50)
+        let moodShift = (trait === 'arrogant' || trait === 'rambling') ? 12 : (trait === 'shy' ? -12 : 0);
         const currentMood = prev.moodScore;
-        const drift = currentMood > 55 ? -3 : currentMood < 45 ? 3 : 0;
-
+        const drift = currentMood > 50 ? -2 : 2;
         const nextMood = Math.min(100, Math.max(0, currentMood + moodShift + drift));
-
-        // If mood crosses a threshold, we will update RT session on next turn or now?
-        // Let's update state for UI and the next prompt cycle will use it.
         return { style: trait, softSkills: soft, communication: comm, moodScore: nextMood };
       });
 
       const finalScore = Math.min(10, Math.max(1, parsedScore.score || 5));
 
-      const score: AnswerScore = {
-        question: scoringQuestionRef.current || 'Technical Question',
+      const updatedScore: AnswerScore = {
+        question: existingScore ? existingScore.question : (scoringQuestionRef.current || 'Technical Question'),
         questionSummary: parsedScore.question_summary || '',
-        answerSummary: answerSummary.slice(0, 200),
+        answerSummary: existingScore 
+          ? `(Cont.) ${answerSummary.slice(0, 150)}` 
+          : answerSummary.slice(0, 200),
         score: finalScore,
         feedback: parsedFeedback.feedback || '',
-        tags: parsedFeedback.tags || [],
+        tags: Array.from(new Set([...(existingScore?.tags || []), ...(parsedFeedback.tags || [])])),
         topic: currentTopicRef.current,
-        depth: 1,
+        depth: (existingScore?.depth || 0) + 1,
         confidence: parsedScore.confidence,
         grammar: parsedScore.grammar,
         clarity: parsedScore.clarity,
         depthStr: parsedScore.depth,
         technicalAccuracy: parsedScore.technical_accuracy,
-        missedOpportunities: parsedScore.missed_opportunities || [],
+        missedOpportunities: Array.from(new Set([...(existingScore?.missedOpportunities || []), ...(parsedScore.missed_opportunities || [])])),
         logicEvaluation: parsedScore.logic_evaluation,
       };
 
-      scoresRef.current = [...scoresRef.current, score];
+      if (existingScoreIdx !== -1) {
+        const newScores = [...scoresRef.current];
+        newScores[existingScoreIdx] = updatedScore;
+        scoresRef.current = newScores;
+      } else {
+        scoresRef.current = [...scoresRef.current, updatedScore];
+      }
+
       setScores([...scoresRef.current]);
-      setLastScore(score);
+      setLastScore(updatedScore);
       setQuestionCount(scoresRef.current.length);
-      updateIntelLog(tid, 'done', `Score: ${finalScore}/10 | Style: ${parsedScore.behavioral_trait} ✓`);
+      updateIntelLog(tid, 'done', `${existingScore ? 'Updated' : 'Created'} Score for ${currentTopicRef.current}: ${finalScore}/10 ✓`);
 
       // Injecting adaptive hints based on score
       if (finalScore <= 3) {
@@ -925,8 +967,109 @@ export default function AriaV5() {
       // Score interview answers (only in interview phase)
       if (currentPhase === 'interview') {
         const lastUserMsg = convHistoryRef.current.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+        const transcript = convHistoryRef.current.slice(-4).map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n');
+
+        // TOPIC PACER: Check if we are stuck
+        const pacerRaw = await callMini(
+          `Current Strategy: ${strategyRef.current?.topics.map(t => t.name).join(', ')}
+          Transcript:
+          ${transcript}
+          
+          Identify the SINGLE current topic from the Strategy being discussed.
+          Return JSON: {"topic": "NAME"}`,
+          'Topic detector. JSON only.', usageRef, true
+        );
+        updateUsage();
+
+        let p_top: any = {};
+        try { p_top = JSON.parse(pacerRaw.replace(/```json|```/gi, '').trim()); } catch { }
+        const detectedTopic = p_top.topic || lastTopicRef.current;
+
+        if (detectedTopic === lastTopicRef.current) {
+          topicTurnCountRef.current += 1;
+        } else {
+          lastTopicRef.current = detectedTopic;
+          topicTurnCountRef.current = 1;
+          setCurrentTopic(detectedTopic);
+          currentTopicRef.current = detectedTopic;
+        }
+
+        // Force Pivot Directive if stuck > 3 turns (SILENT SOFT INJECT)
+        if (topicTurnCountRef.current > 3 && strategyRef.current) {
+          const nextIdx = strategyRef.current.topics.findIndex(t => t.name === detectedTopic) + 1;
+          const nextTopic = strategyRef.current.topics[nextIdx];
+          if (nextTopic) {
+            addIntelLog('phase', `Soft Pivot: "${detectedTopic}" exhausted → Queueing "${nextTopic.name}"`);
+            
+            // 1. Silent History Update (No forceResponse)
+            injectSystemMessage(`SYSTEM DIRECTIVE (SILENT): Topic budget exceeded. Pivot naturally to "${nextTopic.name}" in your next turn.`, false);
+            
+            // 2. State Update
+            lastTopicRef.current = nextTopic.name;
+            topicTurnCountRef.current = 0;
+            setCurrentTopic(nextTopic.name);
+            currentTopicRef.current = nextTopic.name;
+
+            // 3. Brain Instructions Sync (The Soft Inject)
+            const newPrompt = buildRTBrainPrompt({
+              phase: phaseRef.current,
+              candidateName: candidateNameRef.current,
+              cvSummary: cvSummaryRef.current,
+              cvPersonalSummary: cvPersonalSummaryRef.current,
+              cvTechnicalSummary: cvTechnicalSummaryRef.current,
+              jdText: jdTextRef.current,
+              strategy: strategyRef.current,
+              numQuestions: numQuestionsRef.current,
+              interviewDurationMins: interviewDurationRef.current,
+              historySummary: historySummaryRef.current,
+              personality: behavior.moodScore < 35 ? 'nice' : behavior.moodScore > 65 ? 'strict' : 'neutral',
+              scores: scoresRef.current,
+              currentTopic: currentTopicRef.current
+            });
+
+            sendRt({ type: 'session.update', session: { instructions: newPrompt } });
+          }
+        }
+
         if (lastUserMsg.length > 8) {
-          await scoreAnswer(lastUserMsg);
+          // Detect "I don't know" to burn topic
+          if (lastUserMsg.toLowerCase().includes("don't know") || lastUserMsg.toLowerCase().includes("no clue") || lastUserMsg.toLowerCase().includes("not sure about")) {
+             addIntelLog('score', `Candidate admitted ignorance/failure on ${detectedTopic} → Burning topic.`);
+             
+             // Manually inject a zero score for this topic to mark it as DONE
+             const failedScore: AnswerScore = {
+               question: scoringQuestionRef.current || 'Technical Question',
+               questionSummary: 'Candidate admitted ignorance or failed to answer.',
+               answerSummary: lastUserMsg,
+               score: 1, // Minimum score to indicate failure
+               feedback: 'Topic terminated due to candidate admitting they do not know the answer.',
+               tags: ['Ignorance', 'Skill Gap'],
+               topic: detectedTopic,
+               depth: 0,
+               confidence: 'low',
+               grammar: 'n/a',
+               clarity: 'poor',
+               depthStr: 'none',
+               technicalAccuracy: 0,
+               missedOpportunities: ['Entire topic missed.'],
+               logicEvaluation: 'No logic provided.',
+             };
+             
+             scoresRef.current = [...scoresRef.current, failedScore];
+             setScores([...scoresRef.current]);
+             
+             // FORCED INSTANT PIVOT
+             const nextIdx = strategyRef.current?.topics.findIndex(t => t.name === detectedTopic) + 1;
+             const nextTopic = strategyRef.current?.topics[nextIdx];
+             if (nextTopic) {
+               injectSystemMessage(`SYSTEM DIRECTIVE: Candidate said "don't know". Topic "${detectedTopic}" is now CLOSED. PIVOT IMMEDIATELY to "${nextTopic.name}".`, false);
+               setCurrentTopic(nextTopic.name);
+               currentTopicRef.current = nextTopic.name;
+               topicTurnCountRef.current = 0;
+             }
+          } else {
+             await scoreAnswer(lastUserMsg);
+          }
         }
       }
 
@@ -1130,29 +1273,39 @@ export default function AriaV5() {
     setCallStatus('Connecting...');
     setPhase('connecting');
 
-    // Pre-process CV summary
+    // Pre-process CV summaries (Dual Context)
     if (cvText) {
       try {
-        const summary = await callMini(
-          `Compress this CV into a high-density technical profile.
-          STRICT RULES:
-          - NO grammar, NO filler words, NO professional bio-talk.
-          - USE "Telegram Style" (dense, technical, data-only).
-          - INCLUDE ALL: Projects, Work Experience, Education, Certifications.
-          - KEEP: Every tech stack mentioned, specific tool names, and numerical metrics.
-          - FORMAT: 
-            [NAME]
-            [SUMMARY: Role | Years Exp]
-            [SKILLS: List all Tech/Tools]
-            [WORK: Comp | Role | Dates | Specific achievements + tech used]
-            [PROJECTS: Project Name | tech used | outcome]
-            [EDUCATION: Degree | Univ | Date]
-          
-          CV TEXT:
-          ${cvText}`,
-          'Technical Data Compressor. High density. Data-only.', usageRef
-        );
-        if (summary) { cvSummaryRef.current = summary; setCvSummary(summary); }
+        const [personal, technical] = await Promise.all([
+          callMini(
+            `Extract ONLY the human/personal details from this CV.
+            Include: Full Name, Hobbies, Personal Interests, Likes/Dislikes, Volunteer work, and Personality traits mentioned.
+            EXCLUDE: Every single mention of work experience, company names, technical skills, and projects.
+            CV:\n${cvText}`, 
+            'Personal Detail Extractor. Human-only. No tech/work.', usageRef
+          ),
+          callMini(
+            `Compress this CV into a high-density technical profile.
+            STRICT RULES:
+            - NO grammar, NO filler words, NO professional bio-talk.
+            - USE "Telegram Style" (dense, technical, data-only).
+            - INCLUDE ALL: Projects, Work Experience, Technical achievements.
+            - KEEP: Every tech stack mentioned, specific tool names, and numerical metrics.
+            EXCLUDE: General bio, hobbies, or fluff.
+            CV:\n${cvText}`,
+            'Technical Data Compressor. High density. Data-only.', usageRef
+          )
+        ]);
+
+        cvPersonalSummaryRef.current = personal;
+        setCvPersonalSummary(personal);
+        cvTechnicalSummaryRef.current = technical;
+        setCvTechnicalSummary(technical);
+        
+        // Full summary as fallback
+        cvSummaryRef.current = personal + "\n" + technical;
+        setCvSummary(personal + "\n" + technical);
+        
         updateUsage();
       } catch { }
     }

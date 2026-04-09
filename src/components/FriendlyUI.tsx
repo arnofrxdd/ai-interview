@@ -460,6 +460,33 @@ export const FriendlyUI: React.FC<Props> = (props) => {
                 </div>
 
                 <div className="f-stat-box">
+                    <div className="f-stat-lbl">Technical Roadmap Progress</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 20 }}>
+                        {!strategy && <div style={{ fontSize: 13, color: 'var(--f-text-dim)', fontStyle: 'italic' }}>Waiting for interview start...</div>}
+                        {strategy?.topics.map((t: any, i: number) => {
+                            const scoreEntry = scores.find(s => s.topic === t.name);
+                            const isDone = !!scoreEntry;
+                            const isFailed = scoreEntry && scoreEntry.score <= 1;
+                            const isActive = t.name === currentTopic;
+                            
+                            return (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: isDone || isActive ? 1 : 0.4 }}>
+                                    <div style={{ 
+                                        width: 10, height: 10, borderRadius: '50%', 
+                                        background: isFailed ? 'var(--f-red)' : (isDone ? 'var(--f-green)' : (isActive ? 'var(--f-accent)' : '#fff')),
+                                        boxShadow: isActive ? `0 0 12px ${isFailed ? 'var(--f-red)' : (isDone ? 'var(--f-green)' : 'var(--f-accent)')}` : 'none',
+                                        transition: 'all 0.4s ease'
+                                    }} />
+                                    <div style={{ fontSize: 12, fontWeight: isActive ? 700 : 500, color: isFailed ? 'var(--f-red)' : (isActive ? 'var(--f-accent)' : 'inherit'), letterSpacing: '0.02em' }}>
+                                        {t.name.toUpperCase()} {isFailed ? '✗' : (isDone ? '✓' : '')}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="f-stat-box">
                     <div className="f-stat-val">{scores.length} <span style={{ fontSize: 14, color: 'var(--f-text-dim)' }}>/ {numQuestions}</span></div>
                     <div className="f-stat-lbl">Questions Evaluated</div>
                 </div>
