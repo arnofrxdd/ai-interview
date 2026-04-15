@@ -17,10 +17,10 @@ interface ThreeDOrbProps {
 // ─── PALETTES ────────────────────────────────────────────────────────────────
 
 const VOICE_PALETTES: Record<string, string[]> = {
-  thalia: ['#fe5165', '#ff8d7e', '#be93e4', '#ffbd8b'],
-  orpheus: ['#5190fe', '#83c5be', '#be93e4', '#93e4d1'],
-  atlas: ['#ffbd8b', '#fe5165', '#ff8d7e', '#be93e4'],
-  asteria: ['#93e4d1', '#be93e4', '#5190fe', '#83c5be'],
+  asteria: ['#fe5165', '#ff8d7e', '#be93e4', '#ffbd8b'], // Vesper
+  hyperion: ['#5190fe', '#83c5be', '#be93e4', '#93e4d1'], // Kaelen
+  atlas: ['#ffbd8b', '#fe5165', '#ff8d7e', '#be93e4'],   // Jax
+  thalia: ['#93e4d1', '#be93e4', '#5190fe', '#83c5be'],  // Lyra
 };
 
 export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, volume, voice = 'thalia', hasGreeted }) => {

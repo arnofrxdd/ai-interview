@@ -54,7 +54,7 @@ import {
   Participant,
   TranscriptionSegment,
 } from 'livekit-client';
-import { ARIA_PROMPTS } from '../lib/prompts';
+import { ARIA_PROMPTS, PERSONA_PROMPTS } from '../lib/prompts';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -91,9 +91,9 @@ export type Topic = {
   id: string;
   name: string;
   source: 'cv' | 'jd' | 'profile';
-  rubric: string;           
-  pressurePoints: string[]; 
-  openingDirective: string; 
+  rubric: string;
+  pressurePoints: string[];
+  openingDirective: string;
   status: TopicStatus;
   turnCount: number;
   score?: number;
@@ -116,7 +116,7 @@ export type ConvEntry = {
   role: 'user' | 'ai' | 'system';
   text: string;
   ts: number;
-  topicId?: string; 
+  topicId?: string;
 };
 
 export type BehaviorState = {
@@ -208,18 +208,21 @@ function buildContextPacket(params: {
   wrapupTurns: number;
   timeLeftSecs: number;
   totalTimeSecs: number;
+  prompts: any;
 }): string {
   const {
-    phase, candidateName, cvSummary, jdText, topics,
-    conv, warmupTurns, wrapupTurns
+    phase, candidateName, cvSummary, topics,
+    conv, warmupTurns, wrapupTurns, prompts
   } = params;
+
+  const pName = prompts.PERSONA.name;
+  const pTitle = prompts.PERSONA.title;
 
   const name = candidateName || 'the candidate';
   const activeTopic = topics.find(t => t.status === 'active');
 
-  // Last 8 turns is better for smaller models to prevent hallucinating old topics
   const recentConv = conv.slice(-8).map(c =>
-    `${c.role === 'ai' ? 'ARIA' : 'CANDIDATE'}: ${c.text}`
+    `${c.role === 'ai' ? pName.toUpperCase() : 'CANDIDATE'}: ${c.text}`
   ).join('\n');
 
   // Single active topic for AI visibility
@@ -227,10 +230,9 @@ function buildContextPacket(params: {
     ? `TOPIC: "${activeTopic.name}" [ACTIVE]`
     : '(No active topic)';
 
-  // Ultra-compressed universal rules so the model actually reads them
-  const universalRules = ARIA_PROMPTS.UNIVERSAL_RULES;
+  const universalRules = prompts.UNIVERSAL_RULES;
 
-  const contextBase = `${ARIA_PROMPTS.ROLE_HEADER.replace('${personaName}', ARIA_PROMPTS.PERSONA.name).replace('${personaTitle}', ARIA_PROMPTS.PERSONA.title)}
+  const contextBase = `${prompts.ROLE_HEADER.replace('${personaName}', pName).replace('${personaTitle}', pTitle)}
 CANDIDATE: ${name}${phase === 'warmup' ? '' : `\nCV: ${cvSummary}`}
 
 === ACTIVE TOPIC ===
@@ -245,16 +247,16 @@ ${recentConv || '(Conversation just started)'}`;
   if (phase === 'warmup') {
     const isStart = warmupTurns === 0;
     const task = isStart
-      ? ARIA_PROMPTS.WARMUP_GREETING
-          .replace('${candidateName}', name)
-          .replace('${personaName}', ARIA_PROMPTS.PERSONA.name)
-      : ARIA_PROMPTS.WARMUP_FOLLOWUP;
+      ? prompts.WARMUP_GREETING
+        .replace('${candidateName}', name)
+        .replace('${personaName}', pName)
+      : prompts.WARMUP_FOLLOWUP;
 
     return `${contextBase}
 
 ${universalRules}
 
-${ARIA_PROMPTS.WARMUP_STATIC.replace('${task}', task)}`;
+${prompts.WARMUP_STATIC.replace('${task}', task)}`;
   }
 
   // ---------------------------------------------------------
@@ -266,13 +268,13 @@ ${ARIA_PROMPTS.WARMUP_STATIC.replace('${task}', task)}`;
 
     // This explicit block stops the AI from getting stuck on old topics
     const actionBlock = isTopicChange
-      ? ARIA_PROMPTS.INTERVIEW_TOPIC_CHANGE
-          .replace('${topicName}', activeTopic?.name || '')
-          .replace('${openingDirective}', activeTopic?.openingDirective || '')
-      : ARIA_PROMPTS.INTERVIEW_STRATEGY
-          .replace('${topicName}', activeTopic?.name || '')
-          .replace('${rubric}', activeTopic?.rubric || '')
-          .replace('${pressurePoints}', pressurePoints);
+      ? prompts.INTERVIEW_TOPIC_CHANGE
+        .replace('${topicName}', activeTopic?.name || '')
+        .replace('${openingDirective}', activeTopic?.openingDirective || '')
+      : prompts.INTERVIEW_STRATEGY
+        .replace('${topicName}', activeTopic?.name || '')
+        .replace('${rubric}', activeTopic?.rubric || '')
+        .replace('${pressurePoints}', pressurePoints);
 
     return `${contextBase}
 
@@ -280,7 +282,7 @@ ${universalRules}
 
 ${actionBlock}
 
-${ARIA_PROMPTS.INTERVIEW_STATIC}`;
+${prompts.INTERVIEW_STATIC}`;
   }
 
   // ---------------------------------------------------------
@@ -288,22 +290,22 @@ ${ARIA_PROMPTS.INTERVIEW_STATIC}`;
   // ---------------------------------------------------------
   if (phase === 'wrapup') {
     const task = wrapupTurns === 0
-      ? ARIA_PROMPTS.WRAPUP_INIT
-      : ARIA_PROMPTS.WRAPUP_FOLLOWUP;
+      ? prompts.WRAPUP_INIT
+      : prompts.WRAPUP_FOLLOWUP;
 
     return `${contextBase}
 
 ${universalRules}
 
-${ARIA_PROMPTS.WRAPUP_STATIC.replace('${task}', task)}`;
+${prompts.WRAPUP_STATIC.replace('${task}', task)}`;
   }
 
   // ---------------------------------------------------------
   // PHASE: CLOSING
   // ---------------------------------------------------------
   if (phase === 'closing') {
-    return ARIA_PROMPTS.CLOSING_DIRECTIVE
-      .replace('${name}', ARIA_PROMPTS.PERSONA.name)
+    return prompts.CLOSING_DIRECTIVE
+      .replace('${name}', pName)
       .replace('${candidateName}', name);
   }
 
@@ -315,11 +317,12 @@ async function generateTopics(
   cvText: string,
   jdText: string,
   numTopics: number,
-  usageRef: React.MutableRefObject<Usage>
+  usageRef: React.MutableRefObject<Usage>,
+  prompts: any
 ): Promise<Topic[]> {
   const raw = await callLLM(
-    ARIA_PROMPTS.GEN_TOPICS_SYSTEM,
-    ARIA_PROMPTS.GEN_TOPICS_USER
+    prompts.GEN_TOPICS_SYSTEM,
+    prompts.GEN_TOPICS_USER
       .replace('${numTopics}', numTopics.toString())
       .replace('${cvText}', cvText)
       .replace('${jdText}', jdText.slice(0, 1500)),
@@ -358,14 +361,15 @@ async function scoreAnswer(params: {
   question: string;
   answer: string;
   usageRef: React.MutableRefObject<Usage>;
+  prompts: any;
 }): Promise<ScoreEntry | null> {
-  const { topic, question, answer, usageRef } = params;
+  const { topic, question, answer, usageRef, prompts } = params;
   if (answer.trim().length < 10) return null;
 
   try {
     const raw = await callLLM(
-      ARIA_PROMPTS.SCORE_ANSWER_SYSTEM,
-      ARIA_PROMPTS.SCORE_ANSWER_USER
+      prompts.SCORE_ANSWER_SYSTEM,
+      prompts.SCORE_ANSWER_USER
         .replace('${topicName}', topic.name)
         .replace('${rubric}', topic.rubric)
         .replace('${answer}', answer),
@@ -393,12 +397,13 @@ async function scoreAnswer(params: {
 async function trackBehavior(
   recentConv: string,
   current: BehaviorState,
-  usageRef: React.MutableRefObject<Usage>
+  usageRef: React.MutableRefObject<Usage>,
+  prompts: any
 ): Promise<Partial<BehaviorState>> {
   try {
     const raw = await callLLM(
-      ARIA_PROMPTS.TRACK_BEHAVIOR_SYSTEM,
-      ARIA_PROMPTS.TRACK_BEHAVIOR_USER.replace('${recentConv}', recentConv),
+      prompts.TRACK_BEHAVIOR_SYSTEM,
+      prompts.TRACK_BEHAVIOR_USER.replace('${recentConv}', recentConv),
       usageRef,
       true
     );
@@ -487,6 +492,7 @@ export default function AriaV8() {
   const lastUserMsgTsRef = useRef<number>(0);
   const lastRoleRef = useRef<'user' | 'ai'>('ai');
   const hasAriaGreetedRef = useRef(false);
+  const voiceRef = useRef(voice);
 
   // ── Sync refs ──
   useEffect(() => { phaseRef.current = phase; }, [phase]);
@@ -494,6 +500,7 @@ export default function AriaV8() {
   useEffect(() => { scoresRef.current = scores; }, [scores]);
   useEffect(() => { convRef.current = conv; }, [conv]);
   useEffect(() => { behaviorRef.current = behavior; }, [behavior]);
+  useEffect(() => { voiceRef.current = voice; }, [voice]);
   useEffect(() => { lkRoomRef.current = lkRoom; }, [lkRoom]);
   useEffect(() => { jdTextRef.current = jdText; }, [jdText]);
   useEffect(() => { candidateNameRef.current = candidateName; }, [candidateName]);
@@ -513,11 +520,13 @@ export default function AriaV8() {
       instructions: ctx,
       sync_id: `${Date.now()}`,
       is_start: isStart ? "true" : "false",
+      voice: (voiceRef as any).current || voice,
     });
   }, []);
 
   // ── Build and push full context for current state ──
   const pushFullContext = useCallback(() => {
+    const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
     const ctx = buildContextPacket({
       phase: phaseRef.current,
       candidateName: candidateNameRef.current,
@@ -530,10 +539,18 @@ export default function AriaV8() {
       wrapupTurns: wrapupTurnsRef.current,
       timeLeftSecs: totalTimeSecsRef.current - Math.floor(elapsedMsRef.current / 1000),
       totalTimeSecs: totalTimeSecsRef.current,
+      prompts: activePrompts,
     });
     const isStart = phaseRef.current === 'warmup' && warmupTurnsRef.current === 0;
     pushContext(ctx, isStart);
   }, [pushContext]);
+
+  useEffect(() => { 
+    if (isCallActive) {
+      slog(`Voice changed to ${voice} — Syncing...`, true);
+      pushFullContext();
+    }
+  }, [voice, isCallActive, pushFullContext, slog]);
 
   // ── Silence timer ──
   const clearSilenceTimer = useCallback(() => {
@@ -598,7 +615,8 @@ export default function AriaV8() {
         silenceCountRef.current++;
         if (silenceCountRef.current >= 3) { endCall(); return; }
         // Nudge via context
-        const nudge = ARIA_PROMPTS.SILENCE_NUDGE.replace('${name}', ARIA_PROMPTS.PERSONA.name);
+        const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
+        const nudge = activePrompts.SILENCE_NUDGE.replace('${name}', activePrompts.PERSONA.name);
         pushContext(nudge);
       }
     }, SILENCE_POLL_MS);
@@ -621,6 +639,8 @@ export default function AriaV8() {
   // ── Background scoring (truly non-blocking) ──
   const triggerBackgroundScoring = useCallback((targetTopicId?: string) => {
     if (scoringInFlightRef.current) return;
+    const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
+    const pName = activePrompts.PERSONA.name;
     const activeTopic = topicsRef.current.find(t =>
       targetTopicId ? t.id === targetTopicId : t.status === 'active'
     );
@@ -629,7 +649,7 @@ export default function AriaV8() {
     // Filter conversation to ONLY messages belonging to this topic
     const topicConv = convRef.current
       .filter(c => c.topicId === activeTopic.id)
-      .map(c => `${c.role === 'ai' ? 'ARIA' : 'CANDIDATE'}: ${c.text}`)
+      .map(c => `${c.role === 'ai' ? pName.toUpperCase() : 'CANDIDATE'}: ${c.text}`)
       .join('\n');
 
     if (!topicConv || topicConv.length < 20) return;
@@ -640,16 +660,18 @@ export default function AriaV8() {
     Promise.all([
       phaseRef.current === 'interview'
         ? scoreAnswer({
-            topic: activeTopic,
-            question: '(Derived from history)',
-            answer: topicConv,
-            usageRef,
-          })
+          topic: activeTopic,
+          question: '(Derived from history)',
+          answer: topicConv,
+          usageRef,
+          prompts: activePrompts,
+        })
         : Promise.resolve(null),
       trackBehavior(
-        convRef.current.slice(-8).map(c => `${c.role === 'ai' ? 'ARIA' : 'CANDIDATE'}: ${c.text}`).join('\n'),
+        convRef.current.slice(-8).map(c => `${c.role === 'ai' ? pName.toUpperCase() : 'CANDIDATE'}: ${c.text}`).join('\n'),
         behaviorRef.current,
-        usageRef
+        usageRef,
+        activePrompts
       )
     ]).then(([score, beh]) => {
       if (score) {
@@ -843,13 +865,24 @@ export default function AriaV8() {
       if (!hasAriaGreetedRef.current) {
         hasAriaGreetedRef.current = true;
         setHasAriaGreeted(true);
+        // 🎙️ AUTO-ENABLE MIC: Only once Aria has finished her first greeting
+        setTimeout(() => {
+          if (lkRoomRef.current && phaseRef.current !== 'setup') {
+            lkRoomRef.current.localParticipant.setMicrophoneEnabled(true);
+            setIsMuted(false);
+            slog("Microphone activated — You can now speak", true);
+          }
+        }, 1000); // Small buffer after she starts speaking
       }
       return;
     }
 
     // --- USER TURN ---
     // 🚨 FIRST GREETING GUARD: Silence the user until Aria says hello
-    if (!hasAriaGreetedRef.current) return;
+    if (!hasAriaGreetedRef.current || phaseRef.current === 'connecting') {
+      console.log("[Guard] Ignoring user turn - agent hasn't greeted or still connecting");
+      return;
+    }
 
     // Hard gate: ignore if AI is speaking or in cooldown
     if (isAriaSpeakingRef.current || speakingCooldownRef.current) return;
@@ -897,9 +930,10 @@ export default function AriaV8() {
       setCvText(text);
       // Auto-detect name
       try {
+        const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
         const nameRaw = await callLLM(
-          ARIA_PROMPTS.EXTRACT_NAME_SYSTEM,
-          ARIA_PROMPTS.EXTRACT_NAME_USER.replace('${cvText}', text.slice(0, 1500)),
+          activePrompts.EXTRACT_NAME_SYSTEM,
+          activePrompts.EXTRACT_NAME_USER.replace('${cvText}', text.slice(0, 1500)),
           usageRef
         );
         const cleaned = nameRaw.replace(/["']/g, '').trim();
@@ -943,6 +977,7 @@ export default function AriaV8() {
     candidateNameRef.current = candidateName;
     hasAriaGreetedRef.current = false;
     setHasAriaGreeted(false);
+    setIsMuted(true); // Start muted
 
     totalTimeSecsRef.current = duration * 60;
     setTimeLeft(duration * 60);
@@ -950,13 +985,14 @@ export default function AriaV8() {
     setPhase('connecting');
     setCallStatus('Connecting...');
 
-    // Process CV in background
+    const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
+
     // Process CV in background
     if (cvText) {
       slog('Processing CV...');
       callLLM(
-        ARIA_PROMPTS.CV_DOSSIER_SYSTEM,
-        ARIA_PROMPTS.CV_DOSSIER_USER.replace('${cvText}', cvText),
+        activePrompts.CV_DOSSIER_SYSTEM,
+        activePrompts.CV_DOSSIER_USER.replace('${cvText}', cvText),
         usageRef
       ).then(summary => {
         cvSummaryRef.current = summary;
@@ -980,7 +1016,7 @@ export default function AriaV8() {
 
       // Generate topics
       slog(`Generating ${numTopics} interview topics...`);
-      const generatedTopics = await generateTopics(cvText || '', jdText, numTopics, usageRef);
+      const generatedTopics = await generateTopics(cvText || '', jdText, numTopics, usageRef, activePrompts);
       topicsRef.current = generatedTopics;
       setTopics(generatedTopics);
       setUsage({ ...usageRef.current });
@@ -1054,13 +1090,22 @@ export default function AriaV8() {
         }
       });
 
+      roomObj.on(RoomEvent.ParticipantConnected, (participant) => {
+        if (!participant.isLocal) {
+          slog(`Agent "${participant.identity}" joined room`, true);
+        }
+      });
+
       roomObj.on(RoomEvent.Disconnected, () => {
         if (!isEndingRef.current) endCall();
       });
 
       const wsUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://127.0.0.1:7880';
       await roomObj.connect(wsUrl, token);
+      // 🎙️ RE-ENABLE MIC AT START: Session health is better with tracks published.
+      // The backend guard will still ignore audio until greeting.
       await roomObj.localParticipant.setMicrophoneEnabled(true);
+      setIsMuted(false);
 
       setLkRoom(roomObj);
       lkRoomRef.current = roomObj;
@@ -1091,12 +1136,11 @@ export default function AriaV8() {
         }
       }, 1000);
 
-      // Push initial warmup context
       const initCtx = buildContextPacket({
         phase: 'warmup',
         candidateName: candidateNameRef.current,
         cvSummary: cvSummaryRef.current,
-        jdText: jdText,
+        jdText: jdTextRef.current,
         topics: generatedTopics,
         conv: [],
         behavior: behaviorRef.current,
@@ -1104,14 +1148,22 @@ export default function AriaV8() {
         wrapupTurns: 0,
         timeLeftSecs: totalTimeSecsRef.current,
         totalTimeSecs: totalTimeSecsRef.current,
+        prompts: activePrompts,
       });
 
-      roomObj.localParticipant.setAttributes({
-        instructions: initCtx,
-        sync_id: `init_${Date.now()}`,
-        is_start: "true",
-        voice: voice,
-      });
+      // 🚨 DELAYED START: Give the agent a moment to join before pushing instructions
+      setTimeout(() => {
+        const room = lkRoomRef.current;
+        if (!room || room.state !== 'connected') return;
+
+        room.localParticipant.setAttributes({
+          instructions: initCtx,
+          sync_id: `init_${Date.now()}`,
+          is_start: "true",
+          voice: voiceRef.current,
+        });
+        slog('Initial context packet pushed to agent', true);
+      }, 2000);
 
     } catch (err: any) {
       console.error('[StartCall]', err);
@@ -1670,6 +1722,8 @@ export default function AriaV8() {
   }
 
 
+  const activePrompts = PERSONA_PROMPTS[voice] || ARIA_PROMPTS;
+
   // Fallback to existing Debug UI (setup, connecting, report, or if toggled)
   if ((phase as any) === 'setup') return (
     <>
@@ -1677,7 +1731,7 @@ export default function AriaV8() {
       <div className="setup">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <div className="logo-mark">🎙</div>
-          <h1 className="setup-title">Evaluate with <em>{ARIA_PROMPTS.PERSONA.name}</em></h1>
+          <h1 className="setup-title">Evaluate with <em>{activePrompts.PERSONA.name}</em></h1>
           <div className="setup-sub">NEXT-GEN TECHNICAL INTERVIEWER v8</div>
         </div>
 
@@ -1776,7 +1830,7 @@ export default function AriaV8() {
         >
           {isParsing
             ? <><div className="spin" /> Processing CV...</>
-            : `→  Begin Interview with ${ARIA_PROMPTS.PERSONA.name}`}
+            : `→  Begin Interview with ${activePrompts.PERSONA.name}`}
         </button>
       </div>
     </>
@@ -1789,7 +1843,7 @@ export default function AriaV8() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, textAlign: 'center' }} className="fade-in">
           <div className="conn-pulse">🎙</div>
           <div>
-            <div style={{ fontFamily: 'var(--display)', fontSize: 24, fontWeight: 300, letterSpacing: '-.01em', marginBottom: 6 }}>Initializing {ARIA_PROMPTS.PERSONA.name}</div>
+            <div style={{ fontFamily: 'var(--display)', fontSize: 24, fontWeight: 300, letterSpacing: '-.01em', marginBottom: 6 }}>Initializing {activePrompts.PERSONA.name}</div>
             <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)' }}>
               {statusLogs[0]?.msg || 'Generating strategy · Connecting...'}
             </div>
@@ -1849,6 +1903,10 @@ export default function AriaV8() {
               Soft skills <strong>{behavior.softSkills}/10</strong> · Communication <strong>{behavior.communication}/10</strong> · Confidence <strong>{behavior.confidence}/10</strong>.
               Aria adapted to <strong>{behavior.ariaMood}</strong> mode throughout.
             </div>
+            <div className="aria-identity">
+              <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 300, letterSpacing: '-.01em' }}>{activePrompts.PERSONA.name}</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--muted)', letterSpacing: '.08em', marginTop: 1 }}>{activePrompts.PERSONA.title}</div>
+            </div>
           </div>
 
           <div className="report-body">
@@ -1907,8 +1965,8 @@ export default function AriaV8() {
           <div className="agent-hero">
             <div className={`agent-orb ${isAriaSpeaking ? 'speaking' : isScoringBg ? 'scoring' : ''}`}>🎙</div>
 
-              <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 300, letterSpacing: '-.01em' }}>{ARIA_PROMPTS.PERSONA.name}</div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--muted)', letterSpacing: '.08em', marginTop: 1 }}>{ARIA_PROMPTS.PERSONA.title}</div>
+            <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 300, letterSpacing: '-.01em' }}>{ARIA_PROMPTS.PERSONA.name}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--muted)', letterSpacing: '.08em', marginTop: 1 }}>{ARIA_PROMPTS.PERSONA.title}</div>
 
             <div className="status-pill" style={{
               background: isAriaSpeaking ? 'var(--blue-pale)' : isScoringBg ? 'var(--violet-pale)' : 'var(--faint)',

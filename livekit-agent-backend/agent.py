@@ -44,7 +44,7 @@ def log_to_file(filename: str, content: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 FALLBACK_INSTRUCTIONS = (
-    "You are Aria, a senior technical interviewer. "
+    "You are Vesper, a senior technical interviewer. "
     "Wait for context packets from the frontend."
 )
 
@@ -65,35 +65,40 @@ async def entrypoint(ctx: JobContext):
         logger.error("Missing API keys (OpenAI or Deepgram)")
         return
 
+    # ── Wait for the first participant and their attributes ──────────────────
+    logger.info("⏳ Waiting for participant to sync attributes (voice, context)...")
+    participant = None
+    voice_attr = "thalia"
+    
+    while True:
+        if ctx.room.remote_participants:
+            participant = list(ctx.room.remote_participants.values())[0]
+            if participant.attributes.get("voice") or participant.attributes.get("instructions"):
+                voice_attr = participant.attributes.get("voice", "thalia")
+                break
+        await asyncio.sleep(0.1)
+
+    model_name = f"aura-2-{voice_attr}-en"
+    logger.info(f"🎙 INITIAL VOICE SYNC: {voice_attr} ({model_name})")
+
+    agent = voice.Agent(
+        instructions=FALLBACK_INSTRUCTIONS,
+        stt=deepgram.STT(api_key=dg_key), 
+        llm=openai.LLM(model="gpt-4o-mini", api_key=oai_key),
+        tts=deepgram.TTS(api_key=dg_key, model=model_name),
+        vad=silero.VAD.load(
+            min_silence_duration=2.5,
+            activation_threshold=0.5,
+        ),
+    )
+
+    session = voice.AgentSession()
+
     # ── State ──────────────────────────────────────────────────────────────
     last_sync_id = None
     current_instructions = FALLBACK_INSTRUCTIONS
     has_greeted = False
 
-    # Wait for the first participant to join if not already present
-    while not ctx.room.remote_participants:
-        await asyncio.sleep(0.1)
-
-    participant = list(ctx.room.remote_participants.values())[0]
-    voice_attr = participant.attributes.get("voice", "thalia")
-    model_name = f"aura-2-{voice_attr}-en"
-    logger.info(f"🎙 VOICE SYNC: {voice_attr} ({model_name})")
-
-    agent = voice.Agent(
-            instructions=FALLBACK_INSTRUCTIONS,
-            stt=deepgram.STT(api_key=dg_key), 
-            llm=openai.LLM(model="gpt-4o-mini", api_key=oai_key),
-            tts=deepgram.TTS(api_key=dg_key, model=model_name),
-            vad=silero.VAD.load(
-                min_silence_duration=2.5,
-                activation_threshold=0.5,
-            ),
-        )
-
-    session = voice.AgentSession()
-
-    # ── ATTRIBUTE INTERCEPTOR ──────────────────────────────────────────────
-    
     def apply_instructions(instructions: str):
         if not agent.chat_ctx:
             logger.warning("⚠️ chat_ctx not initialized yet")
@@ -120,13 +125,23 @@ async def entrypoint(ctx: JobContext):
                 logger.info("⬆️ System prompt inserted at top")
 
     def handle_instruction_update(participant: rtc.Participant):
-        nonlocal last_sync_id, current_instructions, has_greeted
+        nonlocal last_sync_id, current_instructions, has_greeted, voice_attr
         
         attrs = participant.attributes
         sync_id   = attrs.get("sync_id", "")
         new_instr = attrs.get("instructions", "").strip()
         do_reset  = attrs.get("reset_chat", "false").lower() == "true"
         is_start  = attrs.get("is_start", "false").lower() == "true"
+        new_voice = attrs.get("voice", "").strip()
+
+        logger.info(f"📥 ATTR CHANGE [id={sync_id}]: is_start={is_start}, reset={do_reset}, voice={new_voice}")
+
+        # ── Voice Switch ──
+        if new_voice and new_voice != voice_attr:
+            model_name = f"aura-2-{new_voice}-en"
+            logger.info(f"🔄 SWITCHING VOICE: {voice_attr} -> {new_voice} ({model_name})")
+            voice_attr = new_voice
+            agent.tts = deepgram.TTS(api_key=dg_key, model=model_name)
 
         if do_reset:
             logger.info("🚨 RESET SIGNAL RECEIVED — Purging chat context...")
@@ -140,9 +155,11 @@ async def entrypoint(ctx: JobContext):
             return
 
         if not new_instr:
+            logger.warning("⚠️ Received attribute change with empty instructions")
             return
 
         if sync_id and sync_id == last_sync_id:
+            logger.info(f"⏩ Skipping duplicate sync_id: {sync_id}")
             return
 
         last_sync_id = sync_id
@@ -152,13 +169,16 @@ async def entrypoint(ctx: JobContext):
         with open(os.path.join(LOG_DIR, "prompt_history.md"), "a", encoding="utf-8") as f:
             f.write(f"\n\n--- [SYNC_ID: {sync_id}] [{datetime.now().strftime('%H:%M:%S')}] ---\n\n{new_instr}\n")
         
-        logger.info(f"📥 PROMPT SYNC [id={sync_id}]: {new_instr[:100]}...")
+        logger.info(f"💾 PROMPT SYNC [id={sync_id}]: {new_instr[:100]}...")
         apply_instructions(new_instr)
 
-        if is_start and not has_greeted:
-            logger.info("🚀 Triggering initial AI greeting...")
-            has_greeted = True
-            session.generate_reply()
+        if is_start:
+            if not has_greeted:
+                logger.info("🚀 Triggering initial AI greeting...")
+                has_greeted = True
+                session.generate_reply()
+            else:
+                logger.info("ℹ️ Initial greeting already performed, ignoring is_start")
 
     @ctx.room.on("participant_attributes_changed")
     def on_attributes_changed(changed_attributes: dict, participant: rtc.Participant):
@@ -179,6 +199,10 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("user_speech_committed")
     def on_user_spoke(msg):
+        if not has_greeted:
+            logger.warning("🚫 Ignoring user speech before initial greeting")
+            return
+
         text = getattr(msg, "content", None) or str(msg)
         if isinstance(text, list): text = " ".join(str(p) for p in text)
         logger.info(f"USER  >> {str(text)[:100]}...")

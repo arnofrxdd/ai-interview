@@ -5,6 +5,7 @@ import { Participant, Track } from 'livekit-client';
 import { useTracks } from '@livekit/components-react';
 import { ThreeDOrb } from './ThreeDOrb';
 import { ScoreEntry, ConvEntry, BehaviorState } from './interview2';
+import { ARIA_PROMPTS, PERSONA_PROMPTS } from '../lib/prompts';
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,8 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
     participant
   } = props;
 
+  const [localPreviewLoadingId, setLocalPreviewLoadingId] = useState<string | null>(null);
+
   // Track Audio Level for the Orb
   const [volume, setVolume] = useState(0);
 
@@ -114,25 +117,55 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
     };
   }, [participant]);
 
-  const JD_PRESETS = [
-    { id: 'frontend', label: 'Frontend', icon: '⚛️', text: 'Role: Senior Frontend Engineer.\nRequirements: Deep React mastery, state management architectures, web performance optimization, and refined UI engineering.' },
-    { id: 'backend', label: 'Backend', icon: '⚙️', text: 'Role: Senior Backend Architect.\nRequirements: Distributed systems, database design (Relational & NoSQL), system scalability, and high-security API design.' },
-    { id: 'fullstack', label: 'Fullstack', icon: '⚡', text: 'Role: Senior Fullstack Engineer.\nRequirements: End-to-end technical ownership, DX (Developer Experience), modern cloud infra, and cohesive full-stack architectures.' },
-    { id: 'ai', label: 'AI/ML', icon: '🧠', text: 'Role: AI/ML Engineer.\nRequirements: LLM integration (RAG, Fine-tuning), vector databases, latency optimization for real-time inference, and algorithmic honesty.' },
-    { id: 'devops', label: 'DevOps', icon: '☁️', text: 'Role: SRE / Infrastructure Lead.\nRequirements: K8s orchestration, CI/CD pipelines, system reliability, cloud cost optimization, and observability.' },
+  const JD_CATEGORIES = [
+    { id: 'eng', label: 'Engineering' },
+    { id: 'data', label: 'Data & AI' },
+    { id: 'product', label: 'Product & Design' },
+    { id: 'biz', label: 'Business & Ops' },
   ];
 
-  const VOICES = [
-    { id: 'thalia', label: 'Thalia', gender: 'F', desc: 'Poised / Professional', preview: 'Greetings. I am Thalia. I will be conducting your technical evaluation today.' },
-    { id: 'orpheus', label: 'Orpheus', gender: 'M', desc: 'Direct / Stoic', preview: 'I am Orpheus. Let us begin the interrogation. I expect precision in your answers.' },
-    { id: 'atlas', label: 'Atlas', gender: 'M', desc: 'Bright / Energetic', preview: 'Hey there! I am Atlas. Ready to dive deep into your architecture and see how you solve complex problems?' },
-    { id: 'asteria', label: 'Asteria', gender: 'F', desc: 'Cool / Analytical', preview: 'I am Asteria. I will be analyzing your technical depth through a series of edge-case challenges.' },
+  const JD_PRESETS = [
+    // Engineering
+    { id: 'frontend', cat: 'eng', label: 'Frontend', icon: '⚛️', text: 'Role: Senior Frontend Engineer.\nRequirements: Deep React mastery, state management architectures, web performance optimization, and refined UI engineering.' },
+    { id: 'backend', cat: 'eng', label: 'Backend', icon: '⚙️', text: 'Role: Senior Backend Architect.\nRequirements: Distributed systems, database design (Relational & NoSQL), system scalability, and high-security API design.' },
+    { id: 'fullstack', cat: 'eng', label: 'Fullstack', icon: '⚡', text: 'Role: Senior Fullstack Engineer.\nRequirements: End-to-end technical ownership, DX (Developer Experience), modern cloud infra, and cohesive full-stack architectures.' },
+    { id: 'mobile', cat: 'eng', label: 'Mobile', icon: '📱', text: 'Role: Senior Mobile Engineer (React Native/Flutter).\nRequirements: Cross-platform performance, native module integration, offline-first architecture, and smooth gesture-driven UIs.' },
+    { id: 'devops', cat: 'eng', label: 'DevOps', icon: '☁️', text: 'Role: SRE / Infrastructure Lead.\nRequirements: K8s orchestration, CI/CD pipelines, system reliability, cloud cost optimization, and observability.' },
+    
+    // Product & Design
+    { id: 'pm', cat: 'product', label: 'Product Manager', icon: '📋', text: 'Role: Senior Product Manager.\nRequirements: Product strategy, user research, roadmap prioritization, cross-functional leadership, and data-driven decision making.' },
+    { id: 'em', cat: 'product', label: 'Engineering Manager', icon: '🤝', text: 'Role: Engineering Manager.\nRequirements: Team growth, technical mentorship, delivery excellence, conflict resolution, and strategic resource planning.' },
+    { id: 'uiux', cat: 'product', label: 'UI/UX Designer', icon: '🎨', text: 'Role: Senior UI/UX Designer.\nRequirements: User-centric design systems, high-fidelity prototyping, usability testing, and deep understanding of accessibility (a11y).' },
+    { id: 'productdesign', cat: 'product', label: 'Product Designer', icon: '📐', text: 'Role: Product Designer.\nRequirements: End-to-end product design, collaborative problem solving, design-to-engineering handoff, and visual storytelling.' },
+
+    // Business & Ops
+    { id: 'sales', cat: 'biz', label: 'Account Executive', icon: '💰', text: 'Role: Senior Account Executive.\nRequirements: B2B sales experience, pipeline management, negotiation, consultative selling, and achieving ambitious revenue targets.' },
+    { id: 'marketing', cat: 'biz', label: 'Growth Marketer', icon: '📈', text: 'Role: Growth Marketing Lead.\nRequirements: Performance marketing, A/B testing, funnel optimization, brand storytelling, and data-driven campaigning.' },
+    { id: 'hr', cat: 'biz', label: 'HR Director', icon: '👤', text: 'Role: Director of People & Culture.\nRequirements: Talent strategy, organizational development, employee engagement, and building inclusive, high-performing cultures.' },
+    { id: 'ops', cat: 'biz', label: 'Operations Manager', icon: '⚙️', text: 'Role: Operations Manager.\nRequirements: Process optimization, resource allocation, logistics, vendor management, and ensuring operational excellence across the organization.' },
+
+    // Data & AI
+    { id: 'ai', cat: 'data', label: 'AI/ML Engineer', icon: '🧠', text: 'Role: AI/ML Engineer.\nRequirements: LLM integration (RAG, Fine-tuning), vector databases, latency optimization for real-time inference, and algorithmic honesty.' },
+    { id: 'datascientist', cat: 'data', label: 'Data Scientist', icon: '📊', text: 'Role: Senior Data Scientist.\nRequirements: Statistical modeling, predictive analytics, data engineering pipelines, and visualizing complex insights for stakeholders.' },
+    { id: 'dataeng', cat: 'data', label: 'Data Engineer', icon: '🏗️', text: 'Role: Senior Data Engineer.\nRequirements: Large-scale data processing (Spark/Flink), ETL pipeline optimization, data warehousing (Snowflake/BigQuery), and data quality monitoring.' },
   ];
+
+  const [activeCat, setActiveCat] = useState('eng');
+
+  const VOICES = [
+    { id: 'asteria', label: 'Vesper', gender: 'F', desc: 'Skeptical / Senior', detail: 'A ruthless architect who despises filler. Expects deep justification for every technical decision.', preview: 'Greetings. I am Vesper. I will be conducting your technical evaluation today.' },
+    { id: 'hyperion', label: 'Kaelen', gender: 'M', desc: 'Minimalist / Stoic', detail: 'Despises bloat and trendy frameworks. Focuses on bare-metal mechanics and raw efficiency.', preview: 'I am Kaelen. Let us begin the interrogation. I expect precision in your answers.' },
+    { id: 'atlas', label: 'Jax', gender: 'M', desc: 'High-Velocity CTO', detail: 'High-pressure startup perspective. Values speed, adaptability, and immediate business impact.', preview: 'Hey there! I am Jax. Ready to dive deep into your architecture and see how you solve complex problems?' },
+    { id: 'thalia', label: 'Lyra', gender: 'F', desc: 'Edge-Case Analyst', detail: 'Cold, clinical logic. Will hunt for race conditions, deadlocks, and systemic failure modes.', preview: 'I am Lyra. I will be analyzing your technical depth through a series of edge-case challenges.' },
+  ];
+
+  const activePersona = PERSONA_PROMPTS[props.voice] || ARIA_PROMPTS;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const playPreview = async (voiceId: string, text: string) => {
     try {
+      setLocalPreviewLoadingId(voiceId);
       // Stop existing audio
       if (audioRef.current) {
         audioRef.current.pause();
@@ -154,6 +187,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
+      setLocalPreviewLoadingId(null);
       audio.play();
 
       audio.onended = () => {
@@ -162,7 +196,17 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       };
     } catch (e) {
       console.error('Failed to play Deepgram preview:', e);
+      setLocalPreviewLoadingId(null);
     }
+  };
+
+  const handleStartCall = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+    startCall();
   };
 
   if (phase === 'report') {
@@ -175,9 +219,9 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
         <div className="report-container">
           <header className="report-header">
             <div className="header-meta">
-              <span className="premium-logo small">Aria</span>
+              <span className="premium-logo small">{activePersona.PERSONA.name}</span>
               <span className="sep">/</span>
-              <span className="report-title">Technical Evaluation Dossier</span>
+              <span className="report-title">Interview Summary Review</span>
             </div>
             <div className="header-actions">
               <button className="secondary-btn" onClick={() => window.print()}>Export PDF</button>
@@ -247,13 +291,13 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
               </div>
             </div>
 
-            {/* FULL WIDTH: CRITICAL HIGHLIGHTS */}
+            {/* FULL WIDTH: HIGHLIGHTS */}
             <div className="report-card full Highlights">
-              <div className="card-label">Critical Interview Segments</div>
+              <div className="card-label">Key Interview Moments</div>
               <div className="transcript-highlights">
                 {props.conv.filter(c => c.text.length > 50).slice(-6).map((c, i) => (
                   <div key={i} className={`highlight-item ${c.role}`}>
-                    <div className="role-tag">{c.role === 'ai' ? 'Aria' : 'Candidate'}</div>
+                    <div className="role-tag">{c.role === 'ai' ? activePersona.PERSONA.name : 'Candidate'}</div>
                     <div className="text">{c.text}</div>
                   </div>
                 ))}
@@ -269,7 +313,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .header-meta { display: flex; align-items: center; gap: 12px; }
           .premium-logo.small { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 300; }
           .sep { color: #ddd; }
-          .report-title { font-family: 'Geist Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #888; }
+          .report-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: #888; font-weight: 500; }
           
           .header-actions { display: flex; gap: 12px; }
           .primary-btn { background: #000; color: #fff; border: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.2s; }
@@ -280,7 +324,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .report-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 24px; }
           .report-card { background: #fff; border: 1px solid #eef0f2; border-radius: 24px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); }
           .report-card.full { grid-column: span 2; }
-          .card-label { font-family: 'Geist Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: 0.15em; color: #aaa; margin-bottom: 24px; }
+          .card-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: #aaa; margin-bottom: 24px; font-weight: 600; }
 
           .summary-hero { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
           .report-name { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 400; margin-bottom: 8px; letter-spacing: -0.02em; }
@@ -313,7 +357,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .transcript-highlights { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
           .highlight-item { padding: 16px; border-radius: 16px; background: #fafbfc; border-left: 2px solid #000; }
           .highlight-item.ai { background: #f0f7ff; border-left-color: #007aff; }
-          .role-tag { font-family: 'Geist Mono', monospace; font-size: 8px; text-transform: uppercase; color: #aaa; margin-bottom: 8px; }
+          .role-tag { font-size: 10px; text-transform: uppercase; color: #aaa; margin-bottom: 8px; font-weight: 600; }
           .highlight-item .text { font-size: 12px; color: #333; line-height: 1.5; }
 
           @keyframes reportSlideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
@@ -333,112 +377,137 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
 
         <div className="setup-container">
           <header className="setup-header">
-            <h1 className="premium-logo">Aria</h1>
-            <p className="premium-subtitle">The next generation of technical evaluation.</p>
+            <h1 className="premium-logo">
+              AI <br />
+              <span>Interview</span>
+            </h1>
+            <p className="premium-subtitle">Precision autonomous candidate evaluation.</p>
           </header>
 
-          <div className="setup-dossier">
-            {/* LAYER 1: IDENTITY */}
-            <div className="dossier-layer">
-              <div className="layer-title">Evaluation Target</div>
-              <div className="layer-grid">
-                <div className="input-group">
-                  <label>Candidate Name</label>
-                  <input 
-                    type="text" 
-                    placeholder="Full Name"
-                    value={candidateName}
-                    onChange={(e) => setCandidateName(e.target.value)}
-                  />
-                </div>
-                <div className="input-group">
-                  <label>Experience Dossier (CV)</label>
-                  <div className="premium-dropzone" onClick={() => (document.getElementById('cv-up') as any)?.click()}>
-                    <input id="cv-up" type="file" accept=".pdf,.txt" hidden onChange={(e) => e.target.files?.[0] && handleCvFile(e.target.files[0])} />
-                    {isParsing ? 'Analyzing...' : cvFileName ? `✓ ${cvFileName}` : 'Upload Document'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* LAYER 2: VOICE PERSONA */}
-            <div className="dossier-layer">
-              <div className="layer-title">Interviewer Persona</div>
-              <div className="voice-grid">
+          <div className="setup-grid-layout">
+            {/* LEFT COLUMN: PERSONAS */}
+            <aside className="setup-aside">
+              <div className="section-title">Choose Your Interviewer</div>
+              <div className="voice-list">
                 {VOICES.map(v => (
                   <button 
                     key={v.id} 
-                    className={`voice-card ${props.voice === v.id ? 'active' : ''}`}
+                    className={`voice-card ${props.voice === v.id ? 'active' : ''} ${localPreviewLoadingId === v.id ? 'loading' : ''}`}
                     onClick={() => {
                       props.setVoice(v.id);
                       playPreview(v.id, v.preview);
                     }}
                   >
-                    <div className={`voice-swatch ${v.id}`} />
+                    <div className={`voice-swatch ${v.id}`}>
+                      {localPreviewLoadingId === v.id && (
+                        <div className="preview-loader">
+                          <div className="loader-dot" />
+                        </div>
+                      )}
+                    </div>
                     <div className="voice-info">
-                      <div className="voice-name">{v.label} <span className="gender">{v.gender}</span></div>
-                      <div className="voice-desc">{v.desc}</div>
+                      <div className="voice-name">{v.label} <span className="v-desc">— {v.desc}</span></div>
+                      <div className="voice-detail">{v.detail}</div>
                     </div>
                   </button>
                 ))}
               </div>
-            </div>
+            </aside>
 
-            {/* LAYER 3: REQUIREMENTS */}
-            <div className="dossier-layer">
-              <div className="layer-header">
-                <div className="layer-title">Role Requirements</div>
+            {/* RIGHT COLUMN: DETAILS */}
+            <main className="setup-main">
+              {/* SECTION 1: IDENTITY */}
+              <div className="setup-section">
+                <div className="section-title">Candidate Details</div>
+                <div className="layer-grid">
+                  <div className="input-group">
+                    <label>Full Name</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Alex Rivera"
+                      value={candidateName}
+                      onChange={(e) => setCandidateName(e.target.value)}
+                    />
+                  </div>
+                  <div className="input-group">
+                    <label>Upload Resume</label>
+                    <div className="premium-dropzone" onClick={() => (document.getElementById('cv-up') as any)?.click()}>
+                      <input id="cv-up" type="file" accept=".pdf,.txt" hidden onChange={(e) => e.target.files?.[0] && handleCvFile(e.target.files[0])} />
+                      {isParsing ? 'Analyzing details...' : cvFileName ? `✓ ${cvFileName}` : 'Select PDF or Text file'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 3: REQUIREMENTS */}
+              <div className="setup-section">
+                <div className="section-header-tabs">
+                  <div className="section-title">Interview Role</div>
+                  <div className="cat-tabs">
+                    {JD_CATEGORIES.map(c => (
+                      <button 
+                        key={c.id} 
+                        className={`cat-tab ${activeCat === c.id ? 'active' : ''}`}
+                        onClick={() => setActiveCat(c.id)}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                
                 <div className="jd-presets">
-                  {JD_PRESETS.map(p => (
+                  {JD_PRESETS.filter(p => p.cat === activeCat).map(p => (
                     <button 
                       key={p.id} 
-                      className="preset-chip"
+                      className={`preset-chip ${jdText === p.text ? 'active' : ''}`}
                       onClick={() => setJdText(p.text)}
                     >
                       {p.icon} {p.label}
                     </button>
                   ))}
                 </div>
-              </div>
-              <textarea 
-                className="jd-editor"
-                placeholder="Paste Job Description or select a preset..."
-                value={jdText}
-                onChange={(e) => setJdText(e.target.value)}
-              />
-            </div>
 
-            {/* LAYER 4: PARAMETERS */}
-            <div className="dossier-layer footer">
-              <div className="params-grid">
-                <div className="input-group">
-                  <label>Concepts</label>
-                  <div className="premium-segments">
-                    {[3, 5, 8, 10].map(n => (
-                      <button key={n} className={props.numTopics === n ? 'active' : ''} onClick={() => props.setNumTopics(n)}>{n}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="input-group">
-                  <label>Time (m)</label>
-                  <div className="premium-segments">
-                    {[5, 10, 15, 20].map(m => (
-                      <button key={m} className={props.duration === m ? 'active' : ''} onClick={() => props.setDuration(m)}>{m}</button>
-                    ))}
-                  </div>
-                </div>
-                <button className="premium-start" onClick={startCall} disabled={isParsing}>
-                  {isParsing ? 'Processing...' : 'Initiate Evaluation'}
-                </button>
+                <textarea 
+                  className="jd-editor"
+                  placeholder="Briefly describe the role or paste a job description..."
+                  value={jdText}
+                  onChange={(e) => setJdText(e.target.value)}
+                />
               </div>
-              {setupErr && <div className="premium-err">{setupErr}</div>}
-            </div>
+
+              {/* SECTION 4: PARAMETERS */}
+              <div className="setup-section footer">
+                <div className="params-grid">
+                  <div className="input-group">
+                    <label>Topics</label>
+                    <div className="premium-segments">
+                      {[3, 5, 8, 10].map(n => (
+                        <button key={n} className={props.numTopics === n ? 'active' : ''} onClick={() => props.setNumTopics(n)}>{n}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="input-group">
+                    <label>Duration (min)</label>
+                    <div className="premium-segments">
+                      {[5, 10, 15, 20].map(m => (
+                        <button key={m} className={props.duration === m ? 'active' : ''} onClick={() => props.setDuration(m)}>{m}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <button className="premium-start" onClick={handleStartCall} disabled={isParsing}>
+                    {isParsing ? 'Preparing...' : 'Start Interview'}
+                  </button>
+                </div>
+                {setupErr && <div className="premium-err">{setupErr}</div>}
+              </div>
+            </main>
           </div>
         </div>
 
         <style jsx>{`
           .premium-root {
-            @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;1,9..144,300;1,9..144,400&family=Geist+Mono:wght@300;400;500&family=Geist:wght@300;400;500;600&display=swap');
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500&family=Geist:wght@300;400;500;600&display=swap');
             min-height: 100vh;
             background: #ffffff;
             color: #0c0d10;
@@ -464,21 +533,47 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .blob-2 { background: #a1c4fd; bottom: -20%; right: -20%; animation: float 25s infinite reverse; }
 
           /* Voice Themes */
-          .voice-orpheus .blob-1 { background: #243949; } .voice-orpheus .blob-2 { background: #4facfe; }
+          .voice-hyperion .blob-1 { background: #243949; } .voice-hyperion .blob-2 { background: #4facfe; }
           .voice-atlas .blob-1 { background: #f6d365; } .voice-atlas .blob-2 { background: #f5576c; }
-          .voice-asteria .blob-1 { background: #e0c3fc; } .voice-asteria .blob-2 { background: #38f9d7; }
+          .voice-asteria .blob-1 { background: #ff9a9e; } .voice-asteria .blob-2 { background: #fecfef; }
+          .voice-thalia .blob-1 { background: #e0c3fc; } .voice-thalia .blob-2 { background: #38f9d7; }
 
           .setup-container {
-            width: 100%; max-width: 640px;
+            width: 100%; max-width: 1100px;
             animation: fadeIn 0.8s ease-out;
             position: relative; z-index: 20;
             padding: 40px 24px;
           }
-          .setup-header { text-align: center; margin-bottom: 32px; }
-          .premium-logo { font-family: 'Fraunces', serif; font-size: 52px; font-weight: 300; margin-bottom: 4px; letter-spacing: -0.04em; color: #000; }
-          .premium-subtitle { color: #666; font-size: 15px; letter-spacing: -0.01em; }
+          .setup-header { text-align: left; margin-bottom: 40px; padding-left: 8px; }
+          .premium-logo { 
+            font-family: 'Inter', sans-serif; 
+            font-size: 52px; 
+            font-weight: 600; 
+            line-height: 1.0;
+            margin-bottom: 8px; 
+            letter-spacing: -0.04em; 
+            color: #000; 
+          }
+          .premium-logo span { font-weight: 400; color: #111; }
+          .premium-subtitle { color: #666; font-size: 16px; letter-spacing: -0.01em; font-weight: 400; margin-top: 16px; }
 
-          .setup-dossier {
+          .setup-grid-layout {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 24px;
+            align-items: start;
+          }
+
+          .setup-aside {
+            background: #ffffff;
+            border: 1px solid #e2e2e2;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.06);
+            border-radius: 32px;
+            padding: 24px;
+            display: flex; flex-direction: column; gap: 16px;
+          }
+
+          .setup-main {
             background: #ffffff;
             border: 1px solid #e2e2e2;
             box-shadow: 0 20px 60px rgba(0,0,0,0.06);
@@ -486,14 +581,15 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
             overflow: hidden;
             display: flex; flex-direction: column;
           }
-          .dossier-layer {
+          .setup-section {
             padding: 24px 32px;
             border-bottom: 1px solid #f0f0f0;
           }
-          .dossier-layer.footer { background: #fafafa; border-bottom: none; }
-          .layer-title {
-            font-family: 'Geist Mono', monospace; font-size: 10px; text-transform: uppercase;
+          .setup-section.footer { background: #fafafa; border-bottom: none; }
+          .section-title {
+            font-size: 11px; text-transform: uppercase;
             letter-spacing: 0.12em; color: #999; margin-bottom: 16px;
+            font-weight: 600;
           }
           .layer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
           .input-group label { display: block; font-size: 12px; font-weight: 500; color: #444; margin-bottom: 8px; margin-left: 2px; }
@@ -503,35 +599,44 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
             padding: 14px 16px; color: #111; font-size: 14px; outline: none; transition: all 0.2s;
           }
           input:focus, .jd-editor:focus { border-color: #000; background: #fff; box-shadow: 0 0 0 4px rgba(0,0,0,0.02); }
-          .jd-editor { min-height: 120px; resize: none; font-family: inherit; line-height: 1.6; }
+          .jd-editor { min-height: 180px; resize: none; font-family: inherit; line-height: 1.6; margin-top: 16px; }
 
-          .layer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-          .jd-presets { display: flex; gap: 8px; }
+          .section-header-tabs { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+          .cat-tabs { display: flex; gap: 4px; background: #f5f5f5; padding: 3px; border-radius: 12px; width: fit-content; }
+          .cat-tab { border: none; background: transparent; padding: 6px 12px; font-size: 11px; font-weight: 600; color: #888; border-radius: 9px; cursor: pointer; transition: all 0.2s; }
+          .cat-tab.active { background: #fff; color: #000; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+
+          .jd-presets { display: flex; flex-wrap: wrap; gap: 8px; }
           .preset-chip {
-            background: #f5f5f5; border: 1px solid #eee; border-radius: 100px;
-            padding: 4px 10px; font-size: 11px; font-weight: 500; color: #666;
+            background: #fdfdfd; border: 1px solid #f0f0f0; border-radius: 100px;
+            padding: 6px 14px; font-size: 12px; font-weight: 500; color: #666;
             cursor: pointer; transition: all 0.2s;
           }
           .preset-chip:hover { border-color: #000; background: #fff; color: #000; }
+          .preset-chip.active { background: #000; color: #fff; border-color: #000; }
 
-          .voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+          .voice-list { display: flex; flex-direction: column; gap: 12px; }
           .voice-card {
-            display: flex; align-items: center; gap: 12px; padding: 12px;
-            background: #fdfdfd; border: 1px solid #f0f0f0; border-radius: 16px;
+            display: flex; align-items: flex-start; gap: 16px; padding: 16px;
+            background: #fdfdfd; border: 1px solid #f0f0f0; border-radius: 20px;
             cursor: pointer; transition: all 0.2s; text-align: left;
           }
           .voice-card:hover { border-color: #000; background: #fff; }
-          .voice-card.active { border-color: #000; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.04); }
+          .voice-card.active { border-color: #000; background: #fff; box-shadow: 0 8px 16px rgba(0,0,0,0.04); }
           
-          .voice-swatch { width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0; }
-          .voice-swatch.thalia { background: linear-gradient(135deg, #ff9a9e, #fecfef); }
-          .voice-swatch.orpheus { background: linear-gradient(135deg, #243949, #4facfe); }
+          .voice-swatch { width: 56px; height: 56px; border-radius: 16px; flex-shrink: 0; position: relative; display: flex; align-items: center; justify-content: center; }
+          .voice-swatch.thalia { background: linear-gradient(135deg, #e0c3fc, #38f9d7); }
+          .voice-swatch.hyperion { background: linear-gradient(135deg, #243949, #4facfe); }
           .voice-swatch.atlas { background: linear-gradient(135deg, #f6d365, #f5576c); }
-          .voice-swatch.asteria { background: linear-gradient(135deg, #e0c3fc, #38f9d7); }
+          .voice-swatch.asteria { background: linear-gradient(135deg, #ff9a9e, #fecfef); }
 
-          .voice-name { font-size: 13px; font-weight: 600; color: #111; display: flex; align-items: center; gap: 6px; }
-          .gender { font-size: 9px; font-weight: 500; color: #999; padding: 2px 4px; background: #f0f0f0; border-radius: 4px; }
-          .voice-desc { font-size: 11px; color: #777; }
+          .preview-loader { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2); border-radius: 14px; }
+          .loader-dot { width: 16px; height: 16px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+          @keyframes spin { to { transform: rotate(360deg); } }
+
+          .voice-name { font-size: 16px; font-weight: 600; color: #111; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+          .v-desc { font-size: 12px; font-weight: 500; color: #999; }
+          .voice-detail { font-size: 13px; color: #666; line-height: 1.5; }
 
           .premium-dropzone {
             background: #fdfdfd; border: 1px dashed #ddd; border-radius: 12px;
@@ -546,8 +651,8 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           }
           .premium-segments button {
             flex: 1; min-width: 44px; border: none; background: transparent; color: #777;
-            font-family: 'Geist Mono', monospace; font-size: 11px; padding: 7px 0;
-            border-radius: 10px; cursor: pointer; transition: all 0.2s;
+            font-size: 11px; padding: 7px 0; font-weight: 500;
+            border-radius: 100px; cursor: pointer; transition: all 0.2s;
           }
           .premium-segments button.active { background: #fff; color: #000; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 
@@ -559,7 +664,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .premium-start:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.15); }
           .premium-start:disabled { opacity: 0.3; cursor: not-allowed; }
 
-          .premium-err { font-size: 11px; color: #ff4d4d; margin-top: 12px; font-family: 'Geist Mono', monospace; }
+          .premium-err { font-size: 11px; color: #ff4d4d; margin-top: 12px; font-weight: 500; }
 
           @keyframes float { 0%, 100% { transform: translate(0,0); } 50% { transform: translate(10%, 10%); } }
           @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -611,7 +716,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       <div className="orb-wrapper">
         <Orb phase={phase} isAriaSpeaking={isAriaSpeaking} hasGreeted={hasGreeted} volume={volume} voice={props.voice} />
         <div className="status-text">
-          {!hasGreeted ? 'Initializing Persona...' : isAriaSpeaking ? 'Aria is speaking...' : 'Aria is listening...'}
+          {!hasGreeted ? 'Preparing...' : ''}
         </div>
       </div>
 
@@ -639,9 +744,10 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
         .blob-2 { background: #a1c4fd; bottom: -20%; right: -20%; animation: float 25s infinite reverse; }
 
         /* Voice Themes */
-        .voice-orpheus .blob-1 { background: #243949; } .voice-orpheus .blob-2 { background: #4facfe; }
-        .voice-helios .blob-1 { background: #f6d365; } .voice-helios .blob-2 { background: #f5576c; }
-        .voice-stella .blob-1 { background: #e0c3fc; } .voice-stella .blob-2 { background: #38f9d7; }
+        .voice-hyperion .blob-1 { background: #243949; } .voice-hyperion .blob-2 { background: #4facfe; }
+        .voice-atlas .blob-1 { background: #f6d365; } .voice-atlas .blob-2 { background: #f5576c; }
+        .voice-asteria .blob-1 { background: #ff9a9e; } .voice-asteria .blob-2 { background: #fecfef; }
+        .voice-thalia .blob-1 { background: #e0c3fc; } .voice-thalia .blob-2 { background: #38f9d7; }
 
         @keyframes float { 0%, 100% { transform: translate(0,0); } 50% { transform: translate(10%, 10%); } }
 
