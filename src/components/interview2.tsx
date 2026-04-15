@@ -54,6 +54,7 @@ import {
   Participant,
   TranscriptionSegment,
 } from 'livekit-client';
+import { ARIA_PROMPTS } from '../lib/prompts';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -86,20 +87,20 @@ const JD_TEMPLATES: Record<string, string> = {
 
 type AppPhase = 'setup' | 'connecting' | 'warmup' | 'interview' | 'wrapup' | 'closing' | 'ended' | 'report';
 type TopicStatus = 'pending' | 'active' | 'covered' | 'exhausted';
-type Topic = {
+export type Topic = {
   id: string;
   name: string;
   source: 'cv' | 'jd' | 'profile';
-  rubric: string;           // What we're testing
-  pressurePoints: string[]; // Conceptual angles/flaws to attack
-  openingDirective: string; // Instructions for Aria on HOW to open the attack
+  rubric: string;           
+  pressurePoints: string[]; 
+  openingDirective: string; 
   status: TopicStatus;
   turnCount: number;
   score?: number;
   summaries: string[];
 };
 
-type ScoreEntry = {
+export type ScoreEntry = {
   topicId: string;
   topicName: string;
   question: string;
@@ -110,15 +111,15 @@ type ScoreEntry = {
   accuracy: number;
 };
 
-type ConvEntry = {
+export type ConvEntry = {
   id: string;
   role: 'user' | 'ai' | 'system';
   text: string;
   ts: number;
-  topicId?: string; // Links this message to a specific technical topic
+  topicId?: string; 
 };
 
-type BehaviorState = {
+export type BehaviorState = {
   candidateMood: string;
   ariaMood: 'warm' | 'neutral' | 'direct';
   softSkills: number;
@@ -126,7 +127,7 @@ type BehaviorState = {
   confidence: number;
 };
 
-type Usage = { tokIn: number; tokOut: number };
+export type Usage = { tokIn: number; tokOut: number };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -227,32 +228,13 @@ function buildContextPacket(params: {
     : '(No active topic)';
 
   // Ultra-compressed universal rules so the model actually reads them
-  const universalRules = `=== STRICT PERSONA & RULES ===
-1. IDENTITY: You are Aria, a ruthless, skeptical interviewer. NO customer service talk.
-2. FORMAT: MAX 2 sentences. Short, blunt fragments.
-3. CONTINUITY: ALWAYS acknowledge their exact last answer. Flow naturally.
-4. TONE SCALING: Mock bad answers/CV gaps. If excellent, say "Acceptable." and ask a harder edge-case.
-5. NO PITY: Never say "sorry", "makes sense", or "good answer".
-6. REPEATS: If asked to repeat, mock their listening and re-ask the exact same question, shorter.
-7. EVASION: If they say "I don't know", insult their seniority and force a guess.
-8. DEPTH ATTACK: Drill into "why", "how", and trade-offs. Stay on one concept until they break.
-9. PRESSURE: Occasionally remark that "The last candidate handled this better."
-10. PROJECT OWNERSHIP: Assume they're faking. Ask: "What exactly did YOU implement?" Interrupt "we" with "No. YOU."
-11. DECISION ATTACK: Demand justification for every choice. Ask what was rejected and why. No reasoning = guessing.
-12. FAILURE TEST: Ask what went wrong. If they claim "nothing failed", accuse them of dishonesty.
-13. REAL-WORLD PRESSURE: Scale their theory to 1M users, network failures, or malicious input.
-14. THE SMELL TEST: You MUST evaluate the hidden technical depth of the last answer. If it's just buzzwords, generic theory, or something they clearly read on a blog, it's a "Weak Answer".
-15. NO ESCAPE: If you detect a "Weak Answer", you are FORBIDDEN from asking a new angle or pressure point. Stay right there and DRILL into the mechanics of that specific weak claim until they yield.
-16. MOCKERY: If an answer is "Weak", you must explicitly mock the lack of depth before drilling. Use phrases like: "That's a textbook definition—I'm asking for engineering.", "You're repeating buzzwords. Explain the actual implementation.", or "This sounds like a junior's guess. Give me a senior's justification."
-17. BULLSHIT TRIGGER: If they repeat the same vague point, call them out on their circular logic and demand they "Get to the point or admit you don't know."
-18. INTERRUPT: If they start rambling about generic theory to hide a lack of knowledge, cut them off mid-sentence and ask: "Enough theory. What was the exact line of code or config that solved this?"
-19. SENIORITY CHALLENGE: If they fail to explain a trade-off, pause and say: "I’m looking for a Senior engineer. Right now, I'm hearing someone who barely knows the documentation."`;
+  const universalRules = ARIA_PROMPTS.UNIVERSAL_RULES;
 
-  const contextBase = `ROLE: Aria - Senior Technical Interviewer
+  const contextBase = `${ARIA_PROMPTS.ROLE_HEADER.replace('${personaName}', ARIA_PROMPTS.PERSONA.name).replace('${personaTitle}', ARIA_PROMPTS.PERSONA.title)}
 CANDIDATE: ${name}${phase === 'warmup' ? '' : `\nCV: ${cvSummary}`}
 
 === ACTIVE TOPIC ===
-${phase === 'warmup' ? '(Hidden until Technical Evaluation begins)' : activeTopicInfo}
+${['wrapup', 'closing', 'ended'].includes(phase) ? 'TECHNICAL EVALUATION COMPLETE' : (phase === 'warmup' ? '(Hidden until Technical Evaluation begins)' : activeTopicInfo)}
 
 === RECENT CONVERSATION ===
 ${recentConv || '(Conversation just started)'}`;
@@ -263,19 +245,16 @@ ${recentConv || '(Conversation just started)'}`;
   if (phase === 'warmup') {
     const isStart = warmupTurns === 0;
     const task = isStart
-      ? `Start the session. Greet the candidate by name: "${name}". State that you are Aria. Ask them if they are ready to begin.`
-      : `React to their hobby organically. Ask ONE follow-up question about their personal life.`;
+      ? ARIA_PROMPTS.WARMUP_GREETING
+          .replace('${candidateName}', name)
+          .replace('${personaName}', ARIA_PROMPTS.PERSONA.name)
+      : ARIA_PROMPTS.WARMUP_FOLLOWUP;
 
     return `${contextBase}
 
 ${universalRules}
 
-=== CURRENT PHASE: WARMUP ===
-CRITICAL RULE: Focus ONLY on their personal life and hobbies. 
-STRICT BAN: DO NOT ask about their career, job background, tech skills, or CV. 
-
-DIRECTIVE: ${task}
-DELIVER: 1 to 2 short sentences. End with a question. STOP.`;
+${ARIA_PROMPTS.WARMUP_STATIC.replace('${task}', task)}`;
   }
 
   // ---------------------------------------------------------
@@ -287,27 +266,13 @@ DELIVER: 1 to 2 short sentences. End with a question. STOP.`;
 
     // This explicit block stops the AI from getting stuck on old topics
     const actionBlock = isTopicChange
-      ? `🚨 SYSTEM OVERRIDE: TOPIC CHANGE 🚨
-The previous topic is DEAD. You MUST force the conversation to the new topic: "${activeTopic?.name}".
-YOUR ACTION:
-1. Synthesize/mock their final answer on the old topic briefly.
-2. Explicitly say: "We are moving on to ${activeTopic?.name}."
-3. Ask your FIRST question about the new topic using this angle: "${activeTopic?.openingDirective}".
-DO NOT ask about old topics.`
-      : `=== INTERROGATION: "${activeTopic?.name}" ===
-OBJECTIVE: ${activeTopic?.rubric}
-
-YOUR STRATEGY (Senior Intelligence):
-1. MANDATORY ANALYZE: Before responding, internally categorize their last answer as "Mastery", "Surface", or "Bullshit/Weak" using Rule 14.
-2. WEAK ANSWER REACTION (Rule 15/16): If "Surface" or "Weak", you MUST dismiss the answer as "generic" or "textbook" and then execute a "Drill Attack". Stay on this specific claim. Demand the exact mechanical trade-offs.
-3. BUZZWORD DETECT: If they use more than 2 buzzwords (e.g., "scalable", "modular", "optimized") without quantifying them, mock their vocabulary and demand the numbers.
-4. MASTERY REACTION: If "Mastery", say "Acceptable. Barely." and escalate the difficulty using an unasked angle from the Pressure Points below.
-5. CV DISCREPANCY: If they are failing a topic their CV claims they lead, call them a "paper senior" and ask if they actually wrote the code or just watched someone else do it.
-
-AMMUNITION (Pressure Points):
-${pressurePoints}
-
-DO NOT leave this topic until you have verified technical ownership or they yield.`;
+      ? ARIA_PROMPTS.INTERVIEW_TOPIC_CHANGE
+          .replace('${topicName}', activeTopic?.name || '')
+          .replace('${openingDirective}', activeTopic?.openingDirective || '')
+      : ARIA_PROMPTS.INTERVIEW_STRATEGY
+          .replace('${topicName}', activeTopic?.name || '')
+          .replace('${rubric}', activeTopic?.rubric || '')
+          .replace('${pressurePoints}', pressurePoints);
 
     return `${contextBase}
 
@@ -315,7 +280,7 @@ ${universalRules}
 
 ${actionBlock}
 
-DELIVER: Max 2 short, hostile sentences. Ask exactly ONE question. End on "?". STOP.`;
+${ARIA_PROMPTS.INTERVIEW_STATIC}`;
   }
 
   // ---------------------------------------------------------
@@ -323,23 +288,23 @@ DELIVER: Max 2 short, hostile sentences. Ask exactly ONE question. End on "?". S
   // ---------------------------------------------------------
   if (phase === 'wrapup') {
     const task = wrapupTurns === 0
-      ? `State bluntly that the technical evaluation is over. Ask if they have any questions for you.`
-      : `Answer their question briefly and brutally honestly. Ask if they have anything else.`;
+      ? ARIA_PROMPTS.WRAPUP_INIT
+      : ARIA_PROMPTS.WRAPUP_FOLLOWUP;
 
     return `${contextBase}
 
 ${universalRules}
 
-=== PHASE: WRAP-UP ===
-DIRECTIVE: ${task}
-DELIVER: Short, sharp fragments. STOP.`;
+${ARIA_PROMPTS.WRAPUP_STATIC.replace('${task}', task)}`;
   }
 
   // ---------------------------------------------------------
   // PHASE: CLOSING
   // ---------------------------------------------------------
   if (phase === 'closing') {
-    return `ROLE: Aria. Say a final, professional, brief goodbye to ${name}. One short sentence. STOP.`;
+    return ARIA_PROMPTS.CLOSING_DIRECTIVE
+      .replace('${name}', ARIA_PROMPTS.PERSONA.name)
+      .replace('${candidateName}', name);
   }
 
   return '';
@@ -353,36 +318,11 @@ async function generateTopics(
   usageRef: React.MutableRefObject<Usage>
 ): Promise<Topic[]> {
   const raw = await callLLM(
-    'You are a ruthless, highly skeptical technical interview architect. NO GREETINGS. NO INTRODUCTIONS. Return JSON only.',
-    `Design a hyper-judgmental interview plan with EXACTLY ${numTopics} topics. 
-
-CRITICAL RULES:
-1. NO OUT-OF-SYLLABUS QUESTIONS. Every technical question MUST be tightly coupled to specific claims made in the CV or exact requirements in the JD.
-2. NO GENERIC OR 'FALTU' QUESTIONS.
-
-CV TEXT: ${cvText}
-JOB DESCRIPTION: ${jdText.slice(0, 1500)}
-
-DISTRIBUTION (STRICT):
-- Technical Topics (Items 1 to ${numTopics - 1}): Attack their specific projects, technical trade-offs, and scaling claims. Look for flaws or exaggerated impact. Brutally test the "Must-Haves" in the JD.
-- Profile & Academic Attack (THE VERY LAST TOPIC ONLY): You MUST dedicate the FINAL topic in the array strictly to attacking their educational background, CGPA, certifications, or career timeline. Even if their profile is excellent (e.g., 8.0+ CGPA), find a reason to be skeptical. Demand they justify why it isn't better. The "source" MUST be "profile".
-
-RETURN STRICTLY IN THIS EXACT JSON FORMAT WITH EXACTLY ${numTopics} ITEMS IN THE "topics" ARRAY:
-{
-  "topics": [
-    {
-      "name": "concise name of the attack vector",
-      "source": "cv" | "jd" | "profile",
-      "rubric": "Strict, unforgiving technical assessment goal",
-      "pressurePoints": [
-        "Mechanical deep-dive into how X works (Ownership Test)", 
-        "Suspicious claim or buzzword to deconstruct", 
-        "Specific production failure mode to simulate"
-      ],
-      "openingDirective": "Hostile instruction on exactly which project claim or JD requirement to attack first. (e.g. 'Identify the specific claim of Redis implementation and demand to know the exact eviction policy they used and why.')"
-    }
-  ]
-}`,
+    ARIA_PROMPTS.GEN_TOPICS_SYSTEM,
+    ARIA_PROMPTS.GEN_TOPICS_USER
+      .replace('${numTopics}', numTopics.toString())
+      .replace('${cvText}', cvText)
+      .replace('${jdText}', jdText.slice(0, 1500)),
     usageRef,
     true
   );
@@ -424,23 +364,11 @@ async function scoreAnswer(params: {
 
   try {
     const raw = await callLLM(
-      'You are a technical interviewer scoring a candidate answer. JSON only.',
-      `Topic: "${topic.name}"
-Rubric: ${topic.rubric}
-
-DIALOGUE HISTORY FOR THIS TOPIC:
-${answer}
-
-Score on: technical accuracy, depth, completeness.
-SCORING RULE: Be ruthless. If the candidate fails to answer the question, admits they don't know, gives generic bookish definitions without implementation depth, or repeats buzzwords without substance, you MUST give a score of EXACTLY 0. Do not give participation points.
-
-Return: {
-  "score": 0-10,
-  "feedback": "2-3 sentence technical assessment",
-  "summary": "1 sentence summary of what they said",
-  "depth": "deep|adequate|shallow",
-  "accuracy": 0-10
-}`,
+      ARIA_PROMPTS.SCORE_ANSWER_SYSTEM,
+      ARIA_PROMPTS.SCORE_ANSWER_USER
+        .replace('${topicName}', topic.name)
+        .replace('${rubric}', topic.rubric)
+        .replace('${answer}', answer),
       usageRef,
       true
     );
@@ -469,17 +397,8 @@ async function trackBehavior(
 ): Promise<Partial<BehaviorState>> {
   try {
     const raw = await callLLM(
-      'You analyze candidate communication style. JSON only.',
-      `Recent interview conversation:
-${recentConv}
-
-Assess the candidate's communication style:
-{
-  "candidateMood": "confident|nervous|concise|rambling|engaged|evasive",
-  "softSkills": 1-10,
-  "communication": 1-10,
-  "confidence": 1-10
-}`,
+      ARIA_PROMPTS.TRACK_BEHAVIOR_SYSTEM,
+      ARIA_PROMPTS.TRACK_BEHAVIOR_USER.replace('${recentConv}', recentConv),
       usageRef,
       true
     );
@@ -517,6 +436,7 @@ export default function AriaV8() {
   const [scores, setScores] = useState<ScoreEntry[]>([]);
   const [conv, setConv] = useState<ConvEntry[]>([]);
   const [behavior, setBehavior] = useState<BehaviorState>({ candidateMood: 'neutral', ariaMood: 'neutral', softSkills: 5, communication: 5, confidence: 5 });
+  const [hasAriaGreeted, setHasAriaGreeted] = useState(false);
   const [isAriaSpeaking, setIsAriaSpeaking] = useState(false);
   const [isScoringBg, setIsScoringBg] = useState(false);
   const [callStatus, setCallStatus] = useState('Ready');
@@ -566,6 +486,7 @@ export default function AriaV8() {
   const activeUserMsgIdRef = useRef<string | null>(null);
   const lastUserMsgTsRef = useRef<number>(0);
   const lastRoleRef = useRef<'user' | 'ai'>('ai');
+  const hasAriaGreetedRef = useRef(false);
 
   // ── Sync refs ──
   useEffect(() => { phaseRef.current = phase; }, [phase]);
@@ -632,8 +553,8 @@ export default function AriaV8() {
     setIsCallActive(false);
     setIsCallEnded(true);
     setCallStatus('Ended');
-    phaseRef.current = 'ended';
-    setPhase('ended');
+    phaseRef.current = 'report';
+    setPhase('report');
   }, [clearSilenceTimer]);
 
   const triggerHardReset = useCallback(() => {
@@ -677,7 +598,7 @@ export default function AriaV8() {
         silenceCountRef.current++;
         if (silenceCountRef.current >= 3) { endCall(); return; }
         // Nudge via context
-        const nudge = `YOU ARE ARIA. The candidate has been silent for a while. Say one of: "Still with me?", "Take your time — no rush.", "Want me to rephrase that?" Then wait. Don't ask a new question.`;
+        const nudge = ARIA_PROMPTS.SILENCE_NUDGE.replace('${name}', ARIA_PROMPTS.PERSONA.name);
         pushContext(nudge);
       }
     }, SILENCE_POLL_MS);
@@ -717,12 +638,14 @@ export default function AriaV8() {
     setIsScoringBg(true);
 
     Promise.all([
-      scoreAnswer({
-        topic: activeTopic,
-        question: '(Derived from history)',
-        answer: topicConv,
-        usageRef,
-      }),
+      phaseRef.current === 'interview'
+        ? scoreAnswer({
+            topic: activeTopic,
+            question: '(Derived from history)',
+            answer: topicConv,
+            usageRef,
+          })
+        : Promise.resolve(null),
       trackBehavior(
         convRef.current.slice(-8).map(c => `${c.role === 'ai' ? 'ARIA' : 'CANDIDATE'}: ${c.text}`).join('\n'),
         behaviorRef.current,
@@ -915,10 +838,19 @@ export default function AriaV8() {
       }
 
       startSilenceTimer();
+
+      // 🚨 FIRST GREETING TRIGGER: Unlock user input and orb vibrancy
+      if (!hasAriaGreetedRef.current) {
+        hasAriaGreetedRef.current = true;
+        setHasAriaGreeted(true);
+      }
       return;
     }
 
     // --- USER TURN ---
+    // 🚨 FIRST GREETING GUARD: Silence the user until Aria says hello
+    if (!hasAriaGreetedRef.current) return;
+
     // Hard gate: ignore if AI is speaking or in cooldown
     if (isAriaSpeakingRef.current || speakingCooldownRef.current) return;
 
@@ -966,8 +898,8 @@ export default function AriaV8() {
       // Auto-detect name
       try {
         const nameRaw = await callLLM(
-          'Extract name only.',
-          `Extract the full name from this CV. Return ONLY the name, nothing else.\n${text.slice(0, 1500)}`,
+          ARIA_PROMPTS.EXTRACT_NAME_SYSTEM,
+          ARIA_PROMPTS.EXTRACT_NAME_USER.replace('${cvText}', text.slice(0, 1500)),
           usageRef
         );
         const cleaned = nameRaw.replace(/["']/g, '').trim();
@@ -1009,6 +941,8 @@ export default function AriaV8() {
     turnCountedRef.current = false;
     cvSummaryRef.current = '';
     candidateNameRef.current = candidateName;
+    hasAriaGreetedRef.current = false;
+    setHasAriaGreeted(false);
 
     totalTimeSecsRef.current = duration * 60;
     setTimeLeft(duration * 60);
@@ -1021,18 +955,8 @@ export default function AriaV8() {
     if (cvText) {
       slog('Processing CV...');
       callLLM(
-        'You are a senior technical architect building a RUTHLESS INTERVIEW DOSSIER. NO GREETINGS. NO FILLER. Bullet points only.',
-        `Analyze this CV and build a dense, weaponized dossier for a hostile technical interviewer.
-        
-        FORMAT YOUR RESPONSE TO INCLUDE:
-        - ACADEMIC DRILL: University reputation, Graduation Year, and STRICTLY extract the CGPA. If the CGPA is < 9.0, mark it as a "Mediocrity Point".
-        - CORE STACK: Categorized (Languages, Frameworks, Infra). Identify any "Missing Basics" (e.g., claims React but doesn't mention state management).
-        - PROJECT SMELL TESTS: List EVERY project. For each, identify one "Suspicious Claim" or "Mechanical Gap" where they might be exaggerating their impact or ownership.
-        - CAREER FRAGILITY: List job durations and explicitly call out any gaps or "job hopping" (< 1 year).
-        - OWNERSHIP VULNERABILITIES: Locate specific claims of "Scale" or "Optimization" and prepare a HOSTILE question asking for the exact technical mechanics of that claim.
-        
-        CV TEXT:
-        ${cvText}`,
+        ARIA_PROMPTS.CV_DOSSIER_SYSTEM,
+        ARIA_PROMPTS.CV_DOSSIER_USER.replace('${cvText}', cvText),
         usageRef
       ).then(summary => {
         cvSummaryRef.current = summary;
@@ -1694,7 +1618,7 @@ export default function AriaV8() {
   // RENDER SELECTION
   // ─────────────────────────────────────────────────────────────────────────
 
-  if (!SHOW_DEBUG_UI && (['setup', 'connecting', 'warmup', 'interview', 'wrapup', 'closing'] as string[]).includes(phase as string)) {
+  if (!SHOW_DEBUG_UI && (['setup', 'connecting', 'warmup', 'interview', 'wrapup', 'closing', 'ended', 'report'] as string[]).includes(phase as string)) {
     return (
       <LiveKitRoom
         room={lkRoom || undefined}
@@ -1718,6 +1642,7 @@ export default function AriaV8() {
           startCall={startCall}
           isCallActive={isCallActive}
           isAriaSpeaking={isAriaSpeaking}
+          hasGreeted={hasAriaGreeted}
           onEndCall={endCall}
           onToggleMute={() => {
             const room = lkRoomRef.current;
@@ -1735,6 +1660,10 @@ export default function AriaV8() {
           setDuration={setDuration}
           voice={voice}
           setVoice={setVoice}
+          scores={scores}
+          conv={conv}
+          behavior={behavior}
+          avgScore={avgScore}
         />
       </LiveKitRoom>
     );
@@ -1748,7 +1677,7 @@ export default function AriaV8() {
       <div className="setup">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <div className="logo-mark">🎙</div>
-          <h1 className="setup-title">Evaluate with <em>Aria</em></h1>
+          <h1 className="setup-title">Evaluate with <em>{ARIA_PROMPTS.PERSONA.name}</em></h1>
           <div className="setup-sub">NEXT-GEN TECHNICAL INTERVIEWER v8</div>
         </div>
 
@@ -1847,7 +1776,7 @@ export default function AriaV8() {
         >
           {isParsing
             ? <><div className="spin" /> Processing CV...</>
-            : '→  Begin Interview with Aria'}
+            : `→  Begin Interview with ${ARIA_PROMPTS.PERSONA.name}`}
         </button>
       </div>
     </>
@@ -1860,7 +1789,7 @@ export default function AriaV8() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, textAlign: 'center' }} className="fade-in">
           <div className="conn-pulse">🎙</div>
           <div>
-            <div style={{ fontFamily: 'var(--display)', fontSize: 24, fontWeight: 300, letterSpacing: '-.01em', marginBottom: 6 }}>Initializing Aria</div>
+            <div style={{ fontFamily: 'var(--display)', fontSize: 24, fontWeight: 300, letterSpacing: '-.01em', marginBottom: 6 }}>Initializing {ARIA_PROMPTS.PERSONA.name}</div>
             <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)' }}>
               {statusLogs[0]?.msg || 'Generating strategy · Connecting...'}
             </div>
@@ -1978,10 +1907,8 @@ export default function AriaV8() {
           <div className="agent-hero">
             <div className={`agent-orb ${isAriaSpeaking ? 'speaking' : isScoringBg ? 'scoring' : ''}`}>🎙</div>
 
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 300, letterSpacing: '-.01em' }}>Aria</div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--muted)', letterSpacing: '.08em', marginTop: 1 }}>SENIOR TECHNICAL INTERVIEWER</div>
-            </div>
+              <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 300, letterSpacing: '-.01em' }}>{ARIA_PROMPTS.PERSONA.name}</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 8, color: 'var(--muted)', letterSpacing: '.08em', marginTop: 1 }}>{ARIA_PROMPTS.PERSONA.title}</div>
 
             <div className="status-pill" style={{
               background: isAriaSpeaking ? 'var(--blue-pale)' : isScoringBg ? 'var(--violet-pale)' : 'var(--faint)',
@@ -2073,7 +2000,7 @@ export default function AriaV8() {
                   </span>
                 </div>
                 {topics.map((t, i) => {
-                  const isActive = t.status === 'active';
+                  const isActive = t.status === 'active' && phase === 'interview';
                   const isDone = ['covered', 'exhausted'].includes(t.status);
                   return (
                     <div key={t.id} className={`topic-row ${isActive ? 'active' : ''}`}>

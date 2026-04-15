@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Participant, Track } from 'livekit-client';
 import { useTracks } from '@livekit/components-react';
 import { ThreeDOrb } from './ThreeDOrb';
+import { ScoreEntry, ConvEntry, BehaviorState } from './interview2';
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ interface AriaPremiumUIProps {
   startCall: () => void;
   isCallActive: boolean;
   isAriaSpeaking: boolean;
+  hasGreeted: boolean;
   onEndCall: () => void;
   onToggleMute: () => void;
   isMuted: boolean;
@@ -32,14 +34,18 @@ interface AriaPremiumUIProps {
   setDuration: (n: number) => void;
   voice: string;
   setVoice: (v: string) => void;
+  scores: ScoreEntry[];
+  conv: ConvEntry[];
+  behavior: BehaviorState;
+  avgScore: number;
 }
 
 // ─── ORB COMPONENT ───────────────────────────────────────────────────────────
 
-const Orb = ({ phase, isAriaSpeaking, volume, voice }: { phase: AppPhase; isAriaSpeaking: boolean; volume: number; voice: string }) => {
+const Orb = ({ phase, isAriaSpeaking, hasGreeted, volume, voice }: { phase: AppPhase; isAriaSpeaking: boolean; hasGreeted: boolean; volume: number; voice: string }) => {
   return (
     <div className="orb-wrapper" style={{ height: 400, width: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <ThreeDOrb phase={phase} isAriaSpeaking={isAriaSpeaking} volume={volume} voice={voice} />
+      <ThreeDOrb phase={phase} isAriaSpeaking={isAriaSpeaking} hasGreeted={hasGreeted} volume={volume} voice={voice} />
     </div>
   );
 };
@@ -50,7 +56,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
   const {
     phase, candidateName, setCandidateName, cvFileName, handleCvFile,
     jdText, setJdText, isParsing, setupErr, startCall,
-    isCallActive, isAriaSpeaking, onEndCall, onToggleMute, isMuted,
+    isCallActive, isAriaSpeaking, hasGreeted, onEndCall, onToggleMute, isMuted,
     participant
   } = props;
 
@@ -158,6 +164,163 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       console.error('Failed to play Deepgram preview:', e);
     }
   };
+
+  if (phase === 'report') {
+    const outcome = props.avgScore >= 8 ? 'Exceptional' : props.avgScore >= 6 ? 'Strong Match' : props.avgScore >= 4 ? 'Developing' : 'Not Recommended';
+    const outcomeColor = props.avgScore >= 8 ? '#4ade80' : props.avgScore >= 6 ? '#fbbf24' : '#f87171';
+
+    return (
+      <div className="premium-root report-mode">
+        <div className="noise-overlay" />
+        <div className="report-container">
+          <header className="report-header">
+            <div className="header-meta">
+              <span className="premium-logo small">Aria</span>
+              <span className="sep">/</span>
+              <span className="report-title">Technical Evaluation Dossier</span>
+            </div>
+            <div className="header-actions">
+              <button className="secondary-btn" onClick={() => window.print()}>Export PDF</button>
+              <button className="primary-btn" onClick={() => window.location.reload()}>New Session</button>
+            </div>
+          </header>
+
+          <main className="report-grid">
+            {/* COLUMN 1: EXECUTIVE SUMMARY */}
+            <div className="report-card primary">
+              <div className="card-label">Executive Summary</div>
+              <div className="summary-hero">
+                <div className="candidate-info">
+                  <h2 className="report-name">{candidateName}</h2>
+                  <div className="outcome-badge" style={{ background: outcomeColor + '20', color: outcomeColor }}>{outcome}</div>
+                </div>
+                <div className="score-gauge">
+                  <svg viewBox="0 0 100 100">
+                    <circle className="gauge-bg" cx="50" cy="50" r="45" />
+                    <circle 
+                      className="gauge-val" 
+                      cx="50" cy="50" r="45" 
+                      style={{ stroke: outcomeColor, strokeDasharray: `${props.avgScore * 28.27} 282.7` }} 
+                    />
+                  </svg>
+                  <div className="gauge-text">
+                    <span className="val">{props.avgScore.toFixed(1)}</span>
+                    <span className="total">/10</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="behavioral-metrics">
+                <div className="metric">
+                  <label>Soft Skills</label>
+                  <div className="bar-track"><div className="bar-fill" style={{ width: `${props.behavior.softSkills * 10}%` }} /></div>
+                </div>
+                <div className="metric">
+                  <label>Communication</label>
+                  <div className="bar-track"><div className="bar-fill" style={{ width: `${props.behavior.communication * 10}%` }} /></div>
+                </div>
+                <div className="metric">
+                  <label>Confidence</label>
+                  <div className="bar-track"><div className="bar-fill" style={{ width: `${props.behavior.confidence * 10}%` }} /></div>
+                </div>
+              </div>
+            </div>
+
+            {/* COLUMN 2: TECHNICAL COMPETENCIES */}
+            <div className="report-card technical">
+              <div className="card-label">Technical Competencies</div>
+              <div className="competency-list">
+                {props.scores.map((s, i) => (
+                  <div key={i} className="comp-item">
+                    <div className="comp-header">
+                      <span className="comp-name">{s.topicName}</span>
+                      <span className="comp-score" style={{ color: s.score >= 7 ? '#4ade80' : s.score >= 5 ? '#fbbf24' : '#f87171' }}>{s.score}/10</span>
+                    </div>
+                    <div className="comp-meta">
+                      <span className={`depth-tag ${s.depth}`}>{s.depth} depth</span>
+                      <span className="acc-tag">Accuracy: {s.accuracy}/10</span>
+                    </div>
+                    <p className="comp-feedback">{s.feedback}</p>
+                  </div>
+                ))}
+                {props.scores.length === 0 && <div className="empty-state">No technical data captured.</div>}
+              </div>
+            </div>
+
+            {/* FULL WIDTH: CRITICAL HIGHLIGHTS */}
+            <div className="report-card full Highlights">
+              <div className="card-label">Critical Interview Segments</div>
+              <div className="transcript-highlights">
+                {props.conv.filter(c => c.text.length > 50).slice(-6).map((c, i) => (
+                  <div key={i} className={`highlight-item ${c.role}`}>
+                    <div className="role-tag">{c.role === 'ai' ? 'Aria' : 'Candidate'}</div>
+                    <div className="text">{c.text}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </main>
+        </div>
+
+        <style jsx>{`
+          .report-mode { background: #f8f9fa; display: block; overflow-y: auto; }
+          .report-container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; animation: reportSlideUp 0.6s cubic-bezier(0.2, 1, 0.3, 1); }
+          .report-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+          .header-meta { display: flex; align-items: center; gap: 12px; }
+          .premium-logo.small { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 300; }
+          .sep { color: #ddd; }
+          .report-title { font-family: 'Geist Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #888; }
+          
+          .header-actions { display: flex; gap: 12px; }
+          .primary-btn { background: #000; color: #fff; border: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+          .secondary-btn { background: #fff; color: #555; border: 1px solid #eee; padding: 10px 20px; border-radius: 10px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+          .primary-btn:hover { background: #333; transform: translateY(-1px); }
+          .secondary-btn:hover { border-color: #000; color: #000; }
+
+          .report-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 24px; }
+          .report-card { background: #fff; border: 1px solid #eef0f2; border-radius: 24px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); }
+          .report-card.full { grid-column: span 2; }
+          .card-label { font-family: 'Geist Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: 0.15em; color: #aaa; margin-bottom: 24px; }
+
+          .summary-hero { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+          .report-name { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 400; margin-bottom: 8px; letter-spacing: -0.02em; }
+          .outcome-badge { display: inline-block; padding: 4px 12px; border-radius: 100px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+
+          .score-gauge { position: relative; width: 100px; height: 100px; }
+          .gauge-bg { fill: none; stroke: #f0f0f0; stroke-width: 8; }
+          .gauge-val { fill: none; stroke-width: 8; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dasharray 1s ease-out; }
+          .gauge-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+          .gauge-text .val { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 400; line-height: 1; }
+          .gauge-text .total { font-size: 10px; color: #aaa; margin-top: 2px; }
+
+          .behavioral-metrics { display: flex; flex-direction: column; gap: 16px; border-top: 1px solid #f5f7f9; pt: 24px; pt: 24px; padding-top: 24px; }
+          .metric label { display: block; font-size: 11px; font-weight: 500; color: #666; margin-bottom: 6px; }
+          .bar-track { height: 6px; background: #f0f2f5; border-radius: 100px; overflow: hidden; }
+          .bar-fill { height: 100%; background: #000; border-radius: 100px; transition: width 1s ease-out; }
+
+          .competency-list { display: flex; flex-direction: column; gap: 24px; }
+          .comp-item { border-bottom: 1px solid #f5f7f9; padding-bottom: 20px; }
+          .comp-item:last-child { border-bottom: none; padding-bottom: 0; }
+          .comp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+          .comp-name { font-size: 15px; font-weight: 600; }
+          .comp-score { font-family: 'Fraunces', serif; font-size: 18px; }
+          
+          .comp-meta { display: flex; gap: 8px; margin-bottom: 12px; }
+          .depth-tag, .acc-tag { font-size: 9px; font-weight: 600; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; border: 1px solid #eee; color: #888; }
+          .depth-tag.deep { background: #f0fdf4; color: #16a34a; border-color: #dcfce7; }
+          .comp-feedback { font-size: 13px; color: #555; lineHeight: 1.6; line-height: 1.6; }
+
+          .transcript-highlights { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+          .highlight-item { padding: 16px; border-radius: 16px; background: #fafbfc; border-left: 2px solid #000; }
+          .highlight-item.ai { background: #f0f7ff; border-left-color: #007aff; }
+          .role-tag { font-family: 'Geist Mono', monospace; font-size: 8px; text-transform: uppercase; color: #aaa; margin-bottom: 8px; }
+          .highlight-item .text { font-size: 12px; color: #333; line-height: 1.5; }
+
+          @keyframes reportSlideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        `}</style>
+      </div>
+    );
+  }
 
   if (phase === 'setup') {
     return (
@@ -446,9 +609,9 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       </div>
 
       <div className="orb-wrapper">
-        <Orb phase={phase} isAriaSpeaking={isAriaSpeaking} volume={volume} voice={props.voice} />
+        <Orb phase={phase} isAriaSpeaking={isAriaSpeaking} hasGreeted={hasGreeted} volume={volume} voice={props.voice} />
         <div className="status-text">
-          {isAriaSpeaking ? 'Aria is speaking...' : 'Aria is listening...'}
+          {!hasGreeted ? 'Initializing Persona...' : isAriaSpeaking ? 'Aria is speaking...' : 'Aria is listening...'}
         </div>
       </div>
 
