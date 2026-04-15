@@ -58,8 +58,11 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
 } from '@livekit/components-react';
+import { AriaPremiumUI } from './AriaPremium';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
+
+const SHOW_DEBUG_UI = false; // 🚨 SET TO TRUE TO ENABLE SIDEBARS & METRICS
 
 const WARMUP_TURNS = 2;
 const WRAPUP_TURNS = 3;
@@ -246,11 +249,10 @@ function buildContextPacket(params: {
 19. SENIORITY CHALLENGE: If they fail to explain a trade-off, pause and say: "I’m looking for a Senior engineer. Right now, I'm hearing someone who barely knows the documentation."`;
 
   const contextBase = `ROLE: Aria - Senior Technical Interviewer
-CANDIDATE: ${name}
-CV: ${cvSummary}
+CANDIDATE: ${name}${phase === 'warmup' ? '' : `\nCV: ${cvSummary}`}
 
 === ACTIVE TOPIC ===
-${activeTopicInfo}
+${phase === 'warmup' ? '(Hidden until Technical Evaluation begins)' : activeTopicInfo}
 
 === RECENT CONVERSATION ===
 ${recentConv || '(Conversation just started)'}`;
@@ -501,6 +503,7 @@ export default function AriaV8() {
   const [duration, setDuration] = useState(10); // minutes
   const [jdTab, setJdTab] = useState<'manual' | 'templates'>('manual');
   const [selectedTmpl, setSelectedTmpl] = useState('');
+  const [voice, setVoice] = useState('thalia');
 
   // Live state
   const [isCallActive, setIsCallActive] = useState(false);
@@ -559,7 +562,7 @@ export default function AriaV8() {
   const scoringInFlightRef = useRef(false);
   const isFirstTurnRef = useRef(true);
   // 🚨 ADD THIS: Lock to prevent double-counting turns
-  const turnCountedRef = useRef(false); 
+  const turnCountedRef = useRef(false);
   const activeUserMsgIdRef = useRef<string | null>(null);
   const lastUserMsgTsRef = useRef<number>(0);
   const lastRoleRef = useRef<'user' | 'ai'>('ai');
@@ -785,7 +788,7 @@ export default function AriaV8() {
     // 2. State & Transitions
     if (currentPhase === 'warmup') {
       // 🚨 ONLY INCREMENT ONCE PER TURN
-      if (!turnCountedRef.current) { 
+      if (!turnCountedRef.current) {
         warmupTurnsRef.current += 1;
         setWarmupTurns(warmupTurnsRef.current);
         turnCountedRef.current = true;
@@ -888,9 +891,9 @@ export default function AriaV8() {
       lastAiTextRef.current = text;
       isAriaSpeakingRef.current = false;
       lastRoleRef.current = 'ai';
-      
+
       // 🚨 RESET TURN LOCK: AI is speaking, so the next time user speaks it's a new turn
-      turnCountedRef.current = false; 
+      turnCountedRef.current = false;
 
       // Cooldown to prevent echo triggering
       speakingCooldownRef.current = true;
@@ -910,7 +913,7 @@ export default function AriaV8() {
         convRef.current = [...convRef.current, entry];
         setConv([...convRef.current]);
       }
-      
+
       startSilenceTimer();
       return;
     }
@@ -942,7 +945,7 @@ export default function AriaV8() {
       userTurnDebounceRef.current = null;
       if (phaseRef.current === 'ended' || isEndingRef.current) return;
       processUserTurn();
-    }, 2500); 
+    }, 2500);
 
   }, [startSilenceTimer, pushFullContext, slog, processUserTurn]);
 
@@ -1003,7 +1006,7 @@ export default function AriaV8() {
     speakingCooldownRef.current = false;
     processedSegmentsRef.current.clear();
     isFirstTurnRef.current = true;
-    turnCountedRef.current = false; 
+    turnCountedRef.current = false;
     cvSummaryRef.current = '';
     candidateNameRef.current = candidateName;
 
@@ -1183,6 +1186,7 @@ export default function AriaV8() {
         instructions: initCtx,
         sync_id: `init_${Date.now()}`,
         is_start: "true",
+        voice: voice,
       });
 
     } catch (err: any) {
@@ -1665,38 +1669,107 @@ export default function AriaV8() {
     .fade-in { animation: fadeUp .35s ease forwards; }
   `;
 
+
   // ─────────────────────────────────────────────────────────────────────────
-  // RENDER: SETUP
+  // VIEW LOGIC
   // ─────────────────────────────────────────────────────────────────────────
 
-  if (phase === 'setup') return (
+  const livePhases: { p: AppPhase; label: string }[] = [
+    { p: 'warmup', label: 'Warmup' },
+    { p: 'interview', label: 'Interview' },
+    { p: 'wrapup', label: 'Wrap-up' },
+    { p: 'closing', label: 'Closing' },
+  ];
+  const phaseOrder = livePhases.map(x => x.p);
+  const curPhaseIdx = phaseOrder.indexOf(phase as any);
+
+  const BARS = 24;
+  const waveHeights = Array.from({ length: BARS }, (_, i) => {
+    if (!isAriaSpeaking) return 3;
+    const t = Date.now() / 200;
+    return Math.max(3, Math.round((Math.sin(i / BARS * Math.PI * 3 + t) * 0.5 + 0.6) * 22));
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER SELECTION
+  // ─────────────────────────────────────────────────────────────────────────
+
+  if (!SHOW_DEBUG_UI && (['setup', 'connecting', 'warmup', 'interview', 'wrapup', 'closing'] as string[]).includes(phase as string)) {
+    return (
+      <LiveKitRoom
+        room={lkRoom || undefined}
+        token={lkToken || undefined}
+        serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://127.0.0.1:7880'}
+        connect={!!lkToken}
+        audio={true}
+        video={false}
+      >
+        <RoomAudioRenderer />
+        <AriaPremiumUI
+          phase={phase}
+          candidateName={candidateName}
+          setCandidateName={setCandidateName}
+          cvFileName={cvFileName}
+          handleCvFile={handleCvFile}
+          jdText={jdText}
+          setJdText={setJdText}
+          isParsing={isParsing}
+          setupErr={setupErr}
+          startCall={startCall}
+          isCallActive={isCallActive}
+          isAriaSpeaking={isAriaSpeaking}
+          onEndCall={endCall}
+          onToggleMute={() => {
+            const room = lkRoomRef.current;
+            if (room) {
+              const en = room.localParticipant.isMicrophoneEnabled;
+              room.localParticipant.setMicrophoneEnabled(!en);
+              setIsMuted(en);
+            }
+          }}
+          isMuted={isMuted}
+          participant={lkRoom?.localParticipant}
+          numTopics={numTopics}
+          setNumTopics={setNumTopics}
+          duration={duration}
+          setDuration={setDuration}
+          voice={voice}
+          setVoice={setVoice}
+        />
+      </LiveKitRoom>
+    );
+  }
+
+
+  // Fallback to existing Debug UI (setup, connecting, report, or if toggled)
+  if ((phase as any) === 'setup') return (
     <>
       <style>{CSS}</style>
       <div className="setup">
-        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }} className="fade-in">
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <div className="logo-mark">🎙</div>
-          <h1 className="setup-title">Meet <em>Aria</em></h1>
-          <p className="setup-sub">v8 · Speaker-First Architecture · Real Human Interview Flow</p>
+          <h1 className="setup-title">Evaluate with <em>Aria</em></h1>
+          <div className="setup-sub">NEXT-GEN TECHNICAL INTERVIEWER v8</div>
         </div>
 
         <div className="setup-grid fade-in">
           {/* CV card */}
           <div className="card">
-            <div className="card-label">Candidate CV</div>
-            {cvText ? (
-              <div className="cv-loaded">
-                <span style={{ fontSize: 16 }}>✓</span>
+            <div className="card-label">Candidate Dossier</div>
+            {cvFileName ? (
+              <div className="cv-loaded fade-in">
+                <div style={{ fontSize: 24 }}>📄</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--green)' }}>{cvFileName || 'CV loaded'}</div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{cvText.length.toLocaleString()} chars</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{cvFileName}</div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>{cvText.length} characters parsed</div>
                 </div>
-                <button onClick={() => { setCvText(''); setCvFileName(''); }} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>✕</button>
+                <button className="btn" style={{ padding: '4px 8px', fontSize: 9 }} onClick={() => { setCvFileName(''); setCvText(''); }}>REMOVE</button>
               </div>
             ) : (
               <>
                 <div className="drop-zone" onClick={() => {
                   const i = document.createElement('input');
-                  i.type = 'file'; i.accept = '.pdf,.txt,.doc,.docx';
+                  i.type = 'file';
                   i.onchange = (e: any) => handleCvFile(e.target.files[0]);
                   i.click();
                 }}>
@@ -1780,11 +1853,7 @@ export default function AriaV8() {
     </>
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER: CONNECTING
-  // ─────────────────────────────────────────────────────────────────────────
-
-  if (phase === 'connecting') return (
+  if ((phase as any) === 'connecting') return (
     <>
       <style>{CSS}</style>
       <div className="connecting">
@@ -1815,11 +1884,7 @@ export default function AriaV8() {
     </>
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER: REPORT
-  // ─────────────────────────────────────────────────────────────────────────
-
-  if (phase === 'report') return (
+  if ((phase as any) === 'report') return (
     <>
       <style>{CSS}</style>
       <div className="report-wrap">
@@ -1893,25 +1958,7 @@ export default function AriaV8() {
     </>
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER: LIVE
-  // ─────────────────────────────────────────────────────────────────────────
 
-  const livePhases: { p: AppPhase; label: string }[] = [
-    { p: 'warmup', label: 'Warmup' },
-    { p: 'interview', label: 'Interview' },
-    { p: 'wrapup', label: 'Wrap-up' },
-    { p: 'closing', label: 'Closing' },
-  ];
-  const phaseOrder = livePhases.map(x => x.p);
-  const curPhaseIdx = phaseOrder.indexOf(phase);
-
-  const BARS = 24;
-  const waveHeights = Array.from({ length: BARS }, (_, i) => {
-    if (!isAriaSpeaking) return 3;
-    const t = Date.now() / 200;
-    return Math.max(3, Math.round((Math.sin(i / BARS * Math.PI * 3 + t) * 0.5 + 0.6) * 22));
-  });
 
   return (
     <LiveKitRoom
@@ -1991,31 +2038,33 @@ export default function AriaV8() {
               </div>
             )}
 
-            {/* Behavior */}
-            <div className="sec">
-              <div className="sec-hd">
-                <span className="sec-title">Behavioral Intel</span>
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: behavior.ariaMood === 'warm' ? 'var(--green)' : behavior.ariaMood === 'direct' ? 'var(--red)' : 'var(--muted)', fontWeight: 600, textTransform: 'uppercase' }}>
-                  aria: {behavior.ariaMood}
-                </span>
+            {/* Behavioral Intel - ONLY visible after warmup */}
+            {phase !== 'warmup' && (
+              <div className="sec">
+                <div className="sec-hd">
+                  <span className="sec-title">Behavioral Intel</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 8, color: behavior.ariaMood === 'warm' ? 'var(--green)' : behavior.ariaMood === 'direct' ? 'var(--red)' : 'var(--muted)', fontWeight: 600, textTransform: 'uppercase' }}>
+                    aria: {behavior.ariaMood}
+                  </span>
+                </div>
+                <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {[
+                    { label: 'CANDIDATE', val: behavior.candidateMood, color: 'var(--blue)' },
+                    { label: 'SOFT SKILLS', val: `${behavior.softSkills}/10`, color: 'var(--amber)' },
+                    { label: 'COMM', val: `${behavior.communication}/10`, color: 'var(--green)' },
+                    { label: 'COST', val: `$${cost(usage)}`, color: 'var(--muted)' },
+                  ].map(({ label, val, color }) => (
+                    <div key={label} style={{ background: 'var(--faint)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 9px' }}>
+                      <div style={{ fontSize: 7, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 2, letterSpacing: '.08em' }}>{label}</div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color, textTransform: 'capitalize' }}>{val}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                {[
-                  { label: 'CANDIDATE', val: behavior.candidateMood, color: 'var(--blue)' },
-                  { label: 'SOFT SKILLS', val: `${behavior.softSkills}/10`, color: 'var(--amber)' },
-                  { label: 'COMM', val: `${behavior.communication}/10`, color: 'var(--green)' },
-                  { label: 'COST', val: `$${cost(usage)}`, color: 'var(--muted)' },
-                ].map(({ label, val, color }) => (
-                  <div key={label} style={{ background: 'var(--faint)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 9px' }}>
-                    <div style={{ fontSize: 7, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 2, letterSpacing: '.08em' }}>{label}</div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color, textTransform: 'capitalize' }}>{val}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            )}
 
-            {/* Topics */}
-            {topics.length > 0 && (
+            {/* Topics - ONLY visible after warmup */}
+            {phase !== 'warmup' && topics.length > 0 && (
               <div className="sec">
                 <div className="sec-hd">
                   <span className="sec-title">Topic Roadmap</span>

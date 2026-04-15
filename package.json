@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.20",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.0",
     "clsx": "^2.1.1",
     "hark": "^1.2.3",
     "livekit-client": "^2.18.1",
@@ -19,7 +21,8 @@
     "pdf-parse": "^1.1.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

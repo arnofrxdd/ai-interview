@@ -70,13 +70,20 @@ async def entrypoint(ctx: JobContext):
     current_instructions = FALLBACK_INSTRUCTIONS
     has_greeted = False
 
+    # Wait for the first participant to join if not already present
+    while not ctx.room.remote_participants:
+        await asyncio.sleep(0.1)
+
+    participant = list(ctx.room.remote_participants.values())[0]
+    voice_attr = participant.attributes.get("voice", "thalia")
+    model_name = f"aura-2-{voice_attr}-en"
+    logger.info(f"🎙 VOICE SYNC: {voice_attr} ({model_name})")
+
     agent = voice.Agent(
             instructions=FALLBACK_INSTRUCTIONS,
-            # Let Silero handle the turn boundary
             stt=deepgram.STT(api_key=dg_key), 
             llm=openai.LLM(model="gpt-4o-mini", api_key=oai_key),
-            tts=deepgram.TTS(api_key=dg_key, model="aura-2-thalia-en"),
-            # 👇 CHANGED 'turn_detector' to 'vad'
+            tts=deepgram.TTS(api_key=dg_key, model=model_name),
             vad=silero.VAD.load(
                 min_silence_duration=2.5,
                 activation_threshold=0.5,
