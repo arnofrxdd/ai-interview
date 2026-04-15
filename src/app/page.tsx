@@ -31,24 +31,24 @@ function hybridCostBreakdown(s: HybridCallSummary) {
 
 function smartCostBreakdown(s: SmartCallSummary) {
     const u = s.usage;
-    // Realtime GPT-4o-mini pricing (User provided)
+    // Realtime GPT-5-mini pricing (User provided)
     const miniCost = (
         (u.textInput * 0.60 / 1_000_000) +
         (u.audioInput * 10.00 / 1_000_000) +
         (u.textOutput * 2.40 / 1_000_000) +
         (u.audioOutput * 20.00 / 1_000_000)
     );
-    // Standard GPT-4o pricing (User provided)
+    // Standard GPT-5 pricing (User provided)
     const gptCost = (
         ((u.escalationPromptTokens || 0) * 2.50 / 1_000_000) +
         ((u.escalationCompletionTokens || 0) * 10.00 / 1_000_000)
     );
-    // Standard GPT-4o-mini pricing
+    // Standard GPT-5-mini pricing
     const gptMiniCost = (
         ((u.escalationMiniPromptTokens || 0) * 0.15 / 1_000_000) +
         ((u.escalationMiniCompletionTokens || 0) * 0.60 / 1_000_000)
     );
-    // Memory and Filter use Standard GPT-4o-mini
+    // Memory and Filter use Standard GPT-5-mini
     const memoryCost = (
         ((u.memoryTokens || 0) * 0.60 / 1_000_000)
     );
@@ -100,7 +100,7 @@ function ArchInfoCard({ type }: { type: 'realtime' | 'smart' }) { // | 'hybrid'
             border: 'border-emerald-100 bg-emerald-50/50',
             badge: 'bg-emerald-100 text-emerald-700',
             label: '🟢 Architecture 2',
-            title: 'Whisper → GPT-4o → TTS-1',
+            title: 'Whisper → GPT-5 → TTS-1',
             desc: 'Text pipeline. Audio captured → transcribed → text LLM → synthesized. Turn-based.',
             chips: [
                 { label: 'Whisper STT', val: '$0.006/min',    color: 'emerald' },

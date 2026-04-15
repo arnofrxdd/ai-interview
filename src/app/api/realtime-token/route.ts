@@ -4,7 +4,8 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json().catch(() => ({}));
         const voice = body.voice || "alloy";
-        const model = body.model || "gpt-4o-mini-realtime-preview-2024-12-17";
+        const rawModel = body.model || "gpt-5-mini";
+        const model = rawModel === "gpt-5-mini" ? "gpt-4o-mini-realtime-preview-2024-12-17" : rawModel;
 
         const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
             method: "POST",

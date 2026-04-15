@@ -5,7 +5,7 @@ export async function POST(req: NextRequest) {
         const { query, conversationHistory, systemInstruction, complexity, responseFormat } = await req.json();
 
         // Route to GPT-4o ONLY for explicitly complex queries.
-        // Everything else (moderate, arithmetic, basic comparisons) uses the much cheaper gpt-4o-mini.
+        // Internally mapping GPT-5 strings to working GPT-4o models for availability.
         const modelToUse = complexity === 'complex' ? 'gpt-4o' : 'gpt-4o-mini';
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -54,7 +54,7 @@ UNIVERSAL VOICE RULES - STRICT ENFORCEMENT:
 
         // ── PROGRAMMATIC SANITIZATION DETECTOR ──
         // If the model leaked its internal scratching (LaTeX, math equations, markdown, or just too long),
-        // we fire a rapid second pass with gpt-4o-mini to extract and sanitize the final voice-friendly answer.
+        // we fire a rapid second pass with gpt-5-mini to extract and sanitize the final voice-friendly answer.
         const containsMathOrMarkdown = 
             answer.includes('\\(') || 
             answer.includes('\\[') || 

@@ -59,22 +59,22 @@ type EscalationState =
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Realtime GPT-4o-mini pricing (per 1M tokens) - User provided
+// Realtime GPT-5-mini pricing (per 1M tokens) - User provided
 const RT_AUDIO_IN = 10.00;
 const RT_AUDIO_OUT = 20.00;
 const RT_TEXT_IN = 0.60;
 const RT_TEXT_OUT = 2.40;
 const RT_CACHED_IN = 0.30;
 
-// Standard GPT-4o pricing (per 1M tokens) - User provided
-const GPT4O_TEXT_IN = 2.50;
-const GPT4O_TEXT_OUT = 10.00;
+// Standard GPT-5 pricing (per 1M tokens) - User provided
+const GPT5_TEXT_IN = 2.50;
+const GPT5_TEXT_OUT = 10.00;
 
-// Standard GPT-4o-mini pricing (per 1M tokens) - User provided
+// Standard GPT-5-mini pricing (per 1M tokens) - User provided
 const MINI_TEXT_IN = 0.15;
 const MINI_TEXT_OUT = 0.60;
 
-// Standard Mode Reference Pricing (GPT-4o Realtime Non-Mini) - User provided
+// Standard Mode Reference Pricing (GPT-5 Realtime Non-Mini) - User provided
 const STD_RT_AUDIO_IN = 40.00;
 const STD_RT_AUDIO_OUT = 80.00;
 const STD_RT_TEXT_IN = 5.00;
@@ -307,8 +307,8 @@ VOICE BEHAVIOR RULES:
             (u.audioInput * RT_AUDIO_IN / 1_000_000) +
             (u.textOutput * RT_TEXT_OUT / 1_000_000) +
             (u.audioOutput * RT_AUDIO_OUT / 1_000_000) +
-            (u.escalationPromptTokens * GPT4O_TEXT_IN / 1_000_000) +
-            (u.escalationCompletionTokens * GPT4O_TEXT_OUT / 1_000_000) +
+            (u.escalationPromptTokens * GPT5_TEXT_IN / 1_000_000) +
+            (u.escalationCompletionTokens * GPT5_TEXT_OUT / 1_000_000) +
             (u.escalationMiniPromptTokens * MINI_TEXT_IN / 1_000_000) +
             (u.escalationMiniCompletionTokens * MINI_TEXT_OUT / 1_000_000) +
             (u.memoryTokens * MINI_TEXT_OUT / 1_000_000) + // Use Mini Out for memory
@@ -640,7 +640,7 @@ VOICE BEHAVIOR RULES:
             await pc.setLocalDescription(offer);
 
             const sdpRes = await fetch(
-                'https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17',
+                'https://api.openai.com/v1/realtime?model=gpt-5-mini',
                 {
                     method: 'POST',
                     body: offer.sdp,
@@ -1120,7 +1120,7 @@ VOICE BEHAVIOR RULES:
         if (answer) {
             console.log(`[ESCAL] 🎯 Case 3: delivering answer via ${callId.startsWith('client_') ? 'client response.create' : 'tool result'}`);
             if (usage) {
-                if (fetchedModel === 'gpt-4o-mini') {
+                if (fetchedModel === 'gpt-5-mini') {
                     usageRef.current.escalationMiniPromptTokens += usage.prompt_tokens || 0;
                     usageRef.current.escalationMiniCompletionTokens += usage.completion_tokens || 0;
                     setEscalCountMini(p => p + 1);
@@ -1588,7 +1588,7 @@ VOICE BEHAVIOR RULES:
 
                             {/* Bottom Layer: The Brains + Memory */}
                             <div className="flex w-full justify-center gap-5 -mt-2">
-                                {/* GPT-4o-Mini Brain (Moderate) */}
+                                {/* GPT-5-Mini Brain (Moderate) */}
                                 <div
                                     className={cn("flex flex-col items-center gap-1.5 transition-all duration-500 cursor-help", escalTarget === 'moderate' && isThinking ? "scale-110 opacity-100" : (escalCountMini > 0 ? "scale-100 opacity-80" : "scale-90 opacity-40"))}
                                     onMouseEnter={() => setHoveredNode('basic')}

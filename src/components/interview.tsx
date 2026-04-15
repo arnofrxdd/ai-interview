@@ -8,7 +8,7 @@
  * - Zero tools, zero signal instructions. Purely conversational.
  * - Intelligent boundaries: instructed strictly NOT to hallucinate and to maintain natural flow.
  *
- * 2. The Specialized Observers (GPT-4o-mini REST):
+ * 2. The Specialized Observers (GPT-5-mini REST):
  * - Constantly watches the transcript array asynchronously.
  * - SPLIT BY PHASE to reduce hallucination and enforce Phase-Specific Goals.
  * - Acts as an Intelligent "Punisher": Generating custom, context-aware corrections if the RT drifts.
