@@ -1,12 +1,43 @@
 version: '3.8'
 
 services:
+  livekit-server:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit-server/livekit.yaml:/etc/livekit.yaml
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    restart: always
+
+  livekit-agent:
+    build:
+      context: ./livekit-agent-backend
+      dockerfile: Dockerfile
+    environment:
+      - LIVEKIT_URL=http://livekit-server:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - livekit-server
+    restart: always
+
   ai-interview-app:
     build: .
     ports:
       - "7001:3000"
     environment:
       - NODE_ENV=production
+      - LIVEKIT_URL=http://livekit-server:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
     env_file:
       - .env
+    depends_on:
+      - livekit-server
     restart: always
