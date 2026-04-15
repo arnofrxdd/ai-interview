@@ -4,6 +4,8 @@ services:
   livekit-server:
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
+    environment:
+      - LIVEKIT_IP=${PUBLIC_IP:-127.0.0.1} # Change this in .env or via shell
     volumes:
       - ./livekit-server/livekit.yaml:/etc/livekit.yaml
     ports:
@@ -19,7 +21,7 @@ services:
     environment:
       - LIVEKIT_URL=http://livekit-server:7880
       - LIVEKIT_API_KEY=devkey
-      - LIVEKIT_API_SECRET=secret
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-v32charslong_secret_key_for_livekit}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - PYTHONUNBUFFERED=1
