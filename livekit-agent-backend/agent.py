@@ -71,13 +71,17 @@ async def entrypoint(ctx: JobContext):
     has_greeted = False
 
     agent = voice.Agent(
-        instructions=FALLBACK_INSTRUCTIONS,
-        stt=deepgram.STT(api_key=dg_key, endpointing_ms=800),
-        llm=openai.LLM(model="gpt-4o-mini", api_key=oai_key),
-        tts=deepgram.TTS(api_key=dg_key, model="aura-2-thalia-en"),
-        min_endpointing_delay=3.0,
-        max_endpointing_delay=8.0,
-    )
+            instructions=FALLBACK_INSTRUCTIONS,
+            # Let Silero handle the turn boundary
+            stt=deepgram.STT(api_key=dg_key), 
+            llm=openai.LLM(model="gpt-4o-mini", api_key=oai_key),
+            tts=deepgram.TTS(api_key=dg_key, model="aura-2-thalia-en"),
+            # 👇 CHANGED 'turn_detector' to 'vad'
+            vad=silero.VAD.load(
+                min_silence_duration=2.5,
+                activation_threshold=0.5,
+            ),
+        )
 
     session = voice.AgentSession()
 

@@ -430,6 +430,8 @@ DIALOGUE HISTORY FOR THIS TOPIC:
 ${answer}
 
 Score on: technical accuracy, depth, completeness.
+SCORING RULE: Be ruthless. If the candidate fails to answer the question, admits they don't know, gives generic bookish definitions without implementation depth, or repeats buzzwords without substance, you MUST give a score of EXACTLY 0. Do not give participation points.
+
 Return: {
   "score": 0-10,
   "feedback": "2-3 sentence technical assessment",
@@ -519,6 +521,7 @@ export default function AriaV8() {
   const [silenceLeft, setSilenceLeft] = useState<number | null>(null);
   const [statusLogs, setStatusLogs] = useState<{ id: string; msg: string; ok?: boolean }[]>([]);
   const [liveContext, setLiveContext] = useState('');
+  const [liveTranscript, setLiveTranscript] = useState<{ role: 'ai' | 'user', text: string } | null>(null);
 
   // LiveKit
   const [lkToken, setLkToken] = useState<string | null>(null);
@@ -555,6 +558,8 @@ export default function AriaV8() {
   const processedSegmentsRef = useRef(new Set<string>());
   const scoringInFlightRef = useRef(false);
   const isFirstTurnRef = useRef(true);
+  // 🚨 ADD THIS: Lock to prevent double-counting turns
+  const turnCountedRef = useRef(false); 
   const activeUserMsgIdRef = useRef<string | null>(null);
   const lastUserMsgTsRef = useRef<number>(0);
   const lastRoleRef = useRef<'user' | 'ai'>('ai');
@@ -742,6 +747,16 @@ export default function AriaV8() {
         }
         setScores([...scoresRef.current]);
         slog(`Scored "${score.topicName}": ${score.score}/10`, true);
+
+        // 🚨 MERCY KILL CHECK: If candidate fails 2+ topics completely, end technical part early
+        const zeroCount = scoresRef.current.filter(s => s.score === 0).length;
+        if (zeroCount >= 2 && phaseRef.current === 'interview') {
+          phaseRef.current = 'wrapup';
+          setPhase('wrapup');
+          wrapupTurnsRef.current = 0;
+          slog('MERCY KILL: Candidate failed multiple topics. Ending interview.', false);
+          pushFullContext();
+        }
       }
 
       if (beh && Object.keys(beh).length > 0) {
@@ -769,8 +784,12 @@ export default function AriaV8() {
 
     // 2. State & Transitions
     if (currentPhase === 'warmup') {
-      warmupTurnsRef.current += 1;
-      setWarmupTurns(warmupTurnsRef.current);
+      // 🚨 ONLY INCREMENT ONCE PER TURN
+      if (!turnCountedRef.current) { 
+        warmupTurnsRef.current += 1;
+        setWarmupTurns(warmupTurnsRef.current);
+        turnCountedRef.current = true;
+      }
 
       if (warmupTurnsRef.current >= WARMUP_TURNS) {
         phaseRef.current = 'interview';
@@ -786,7 +805,11 @@ export default function AriaV8() {
       const activeIdx = updated.findIndex(t => t.status === 'active');
 
       if (activeIdx !== -1) {
-        updated[activeIdx].turnCount += 1;
+        // 🚨 ONLY INCREMENT ONCE PER TURN
+        if (!turnCountedRef.current) {
+          updated[activeIdx].turnCount += 1;
+          turnCountedRef.current = true;
+        }
 
         // Check if we need to advance topic
         if (updated[activeIdx].turnCount >= MAX_TOPIC_TURNS) {
@@ -816,8 +839,12 @@ export default function AriaV8() {
     }
 
     if (currentPhase === 'wrapup') {
-      wrapupTurnsRef.current += 1;
-      setWrapupTurns(wrapupTurnsRef.current);
+      // 🚨 ONLY INCREMENT ONCE PER TURN
+      if (!turnCountedRef.current) {
+        wrapupTurnsRef.current += 1;
+        setWrapupTurns(wrapupTurnsRef.current);
+        turnCountedRef.current = true;
+      }
 
       if (wrapupTurnsRef.current >= WRAPUP_TURNS) {
         phaseRef.current = 'closing';
@@ -853,7 +880,6 @@ export default function AriaV8() {
     }
 
     const now = Date.now();
-    const role: ConvEntry['role'] = isAgent ? 'ai' : 'user';
     const activeTopic = topicsRef.current.find(t => t.status === 'active');
     const topicId = activeTopic?.id;
 
@@ -862,6 +888,9 @@ export default function AriaV8() {
       lastAiTextRef.current = text;
       isAriaSpeakingRef.current = false;
       lastRoleRef.current = 'ai';
+      
+      // 🚨 RESET TURN LOCK: AI is speaking, so the next time user speaks it's a new turn
+      turnCountedRef.current = false; 
 
       // Cooldown to prevent echo triggering
       speakingCooldownRef.current = true;
@@ -870,10 +899,18 @@ export default function AriaV8() {
         speakingCooldownRef.current = false;
       }, SPEAKING_COOLDOWN_MS);
 
-      const id = uid();
-      const entry: ConvEntry = { id, role: 'ai', text, ts: now, topicId };
-      convRef.current = [...convRef.current, entry];
-      setConv([...convRef.current]);
+      // 🚨 SMART APPEND: If AI sends split messages, group them
+      const lastMsg = convRef.current[convRef.current.length - 1];
+      if (lastMsg && lastMsg.role === 'ai') {
+        lastMsg.text += ' ' + text;
+        setConv([...convRef.current]);
+      } else {
+        const id = uid();
+        const entry: ConvEntry = { id, role: 'ai', text, ts: now, topicId };
+        convRef.current = [...convRef.current, entry];
+        setConv([...convRef.current]);
+      }
+      
       startSilenceTimer();
       return;
     }
@@ -886,18 +923,26 @@ export default function AriaV8() {
     lastUserMsgTsRef.current = now;
     lastRoleRef.current = 'user';
 
-    const id = uid();
-    const entry: ConvEntry = { id, role: 'user', text, ts: now, topicId };
-    convRef.current = [...convRef.current, entry];
-    setConv([...convRef.current]);
-    activeUserMsgIdRef.current = id;
+    // 🚨 SMART APPEND: If user speaks again before AI replies, combine into one bubble
+    const lastMsg = convRef.current[convRef.current.length - 1];
+    if (lastMsg && lastMsg.role === 'user') {
+      lastMsg.text += ' ' + text;
+      lastMsg.ts = now;
+      setConv([...convRef.current]);
+    } else {
+      const id = uid();
+      const entry: ConvEntry = { id, role: 'user', text, ts: now, topicId };
+      convRef.current = [...convRef.current, entry];
+      setConv([...convRef.current]);
+      activeUserMsgIdRef.current = id;
+    }
 
-    // Single debounced context push — no stacking
+    // Single debounced context push synced with VAD
     userTurnDebounceRef.current = setTimeout(() => {
       userTurnDebounceRef.current = null;
       if (phaseRef.current === 'ended' || isEndingRef.current) return;
       processUserTurn();
-    }, 800); // short debounce just for network batching
+    }, 2500); 
 
   }, [startSilenceTimer, pushFullContext, slog, processUserTurn]);
 
@@ -958,6 +1003,7 @@ export default function AriaV8() {
     speakingCooldownRef.current = false;
     processedSegmentsRef.current.clear();
     isFirstTurnRef.current = true;
+    turnCountedRef.current = false; 
     cvSummaryRef.current = '';
     candidateNameRef.current = candidateName;
 
@@ -1024,9 +1070,18 @@ export default function AriaV8() {
         if (!segments.length || !participant) return;
         const fullText = segments.map(s => s.text).join(' ').trim();
         if (!fullText) return;
-        const segId = segments[0].id || uid();
+
         const isAgent = !participant.isLocal;
-        handleTranscript(fullText, isAgent, segId, segments);
+        const isFinal = segments.every(s => s.final);
+        const segId = segments[0].id || uid();
+
+        // 🚨 1. STREAMING FIX: Update UI instantly, regardless of final status
+        setLiveTranscript(isFinal ? null : { role: isAgent ? 'ai' : 'user', text: fullText });
+
+        // 🚨 2. ONLY commit to permanent history when the turn is actually finished
+        if (isFinal) {
+          handleTranscript(fullText, isAgent, segId, segments);
+        }
 
         if (isAgent) {
           isAriaSpeakingRef.current = true;
@@ -2110,6 +2165,16 @@ export default function AriaV8() {
                 <div className={`msg-text ${entry.role}`}>{entry.text}</div>
               </div>
             ))}
+
+            {/* 🚨 THE NEW LIVE STREAMING BUBBLE 🚨 */}
+            {liveTranscript && (
+              <div className="msg pulse" style={{ opacity: 0.6 }}>
+                <div className={`msg-av ${liveTranscript.role}`}>
+                  {liveTranscript.role === 'ai' ? 'AR' : 'YOU'}
+                </div>
+                <div className={`msg-text ${liveTranscript.role}`}>{liveTranscript.text}</div>
+              </div>
+            )}
           </div>
         </div>
 
