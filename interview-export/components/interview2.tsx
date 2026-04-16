@@ -211,7 +211,7 @@ function buildContextPacket(params: {
   prompts: any;
 }): string {
   const {
-    phase, candidateName, cvSummary, jdText, topics,
+    phase, candidateName, cvSummary, topics,
     conv, warmupTurns, wrapupTurns, prompts
   } = params;
 
@@ -233,7 +233,7 @@ function buildContextPacket(params: {
   const universalRules = prompts.UNIVERSAL_RULES;
 
   const contextBase = `${prompts.ROLE_HEADER.replace('${personaName}', pName).replace('${personaTitle}', pTitle)}
-CANDIDATE: ${name}${phase === 'warmup' ? '' : `\nJOB DESCRIPTION: ${jdText}\nCV: ${cvSummary}`}
+CANDIDATE: ${name}${phase === 'warmup' ? '' : `\nCV: ${cvSummary}`}
 
 === ACTIVE TOPIC ===
 ${['wrapup', 'closing', 'ended'].includes(phase) ? 'TECHNICAL EVALUATION COMPLETE' : (phase === 'warmup' ? '(Hidden until Technical Evaluation begins)' : activeTopicInfo)}
