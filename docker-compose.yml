@@ -33,7 +33,7 @@ services:
     build:
       context: .
       args:
-        - NEXT_PUBLIC_LIVEKIT_URL=ws://140.245.4.122:7880
+        - NEXT_PUBLIC_LIVEKIT_URL=wss://arnavcloud.co.in
     ports:
       - "7001:3000"
     environment:
