@@ -39,14 +39,15 @@ interface AriaPremiumUIProps {
   conv: ConvEntry[];
   behavior: BehaviorState;
   avgScore: number;
+  isThinking?: boolean;
 }
 
 // ─── ORB COMPONENT ───────────────────────────────────────────────────────────
 
-const Orb = ({ phase, isAriaSpeaking, hasGreeted, volume, voice }: { phase: AppPhase; isAriaSpeaking: boolean; hasGreeted: boolean; volume: number; voice: string }) => {
+const Orb = ({ phase, isAriaSpeaking, isThinking, hasGreeted, volume, voice }: { phase: AppPhase; isAriaSpeaking: boolean; isThinking?: boolean; hasGreeted: boolean; volume: number; voice: string }) => {
   return (
     <div className="orb-wrapper" style={{ height: 400, width: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <ThreeDOrb phase={phase} isAriaSpeaking={isAriaSpeaking} hasGreeted={hasGreeted} volume={volume} voice={voice} />
+      <ThreeDOrb phase={phase} isAriaSpeaking={isAriaSpeaking} isThinking={isThinking} hasGreeted={hasGreeted} volume={volume} voice={voice} />
     </div>
   );
 };
@@ -156,7 +157,6 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
     { id: 'asteria', label: 'Vesper', gender: 'F', desc: 'Skeptical / Senior', detail: 'A ruthless architect who despises filler. Expects deep justification for every technical decision.', preview: 'Greetings. I am Vesper. I will be conducting your technical evaluation today.' },
     { id: 'hyperion', label: 'Kaelen', gender: 'M', desc: 'Minimalist / Stoic', detail: 'Despises bloat and trendy frameworks. Focuses on bare-metal mechanics and raw efficiency.', preview: 'I am Kaelen. Let us begin the interrogation. I expect precision in your answers.' },
     { id: 'atlas', label: 'Jax', gender: 'M', desc: 'High-Velocity CTO', detail: 'High-pressure startup perspective. Values speed, adaptability, and immediate business impact.', preview: 'Hey there! I am Jax. Ready to dive deep into your architecture and see how you solve complex problems?' },
-    { id: 'thalia', label: 'Lyra', gender: 'F', desc: 'Edge-Case Analyst', detail: 'Cold, clinical logic. Will hunt for race conditions, deadlocks, and systemic failure modes.', preview: 'I am Lyra. I will be analyzing your technical depth through a series of edge-case challenges.' },
   ];
 
   const activePersona = PERSONA_PROMPTS[props.voice] || ARIA_PROMPTS;
@@ -714,7 +714,7 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
       </div>
 
       <div className="orb-wrapper">
-        <Orb phase={phase} isAriaSpeaking={isAriaSpeaking} hasGreeted={hasGreeted} volume={volume} voice={props.voice} />
+        <Orb phase={phase} isAriaSpeaking={isAriaSpeaking} isThinking={props.isThinking} hasGreeted={hasGreeted} volume={volume} voice={props.voice} />
         <div className="status-text">
           {!hasGreeted ? 'Preparing...' : ''}
         </div>

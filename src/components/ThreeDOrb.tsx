@@ -9,6 +9,7 @@ type AppPhase = 'setup' | 'connecting' | 'warmup' | 'interview' | 'wrapup' | 'cl
 interface ThreeDOrbProps {
   phase: AppPhase;
   isAriaSpeaking: boolean;
+  isThinking?: boolean;
   hasGreeted: boolean;
   volume: number;
   voice?: string;
@@ -23,7 +24,7 @@ const VOICE_PALETTES: Record<string, string[]> = {
   thalia: ['#93e4d1', '#be93e4', '#5190fe', '#83c5be'],  // Lyra
 };
 
-export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, volume, voice = 'thalia', hasGreeted }) => {
+export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, isThinking, volume, voice = 'thalia', hasGreeted }) => {
   const colors = useMemo(() => {
     return VOICE_PALETTES[voice] || VOICE_PALETTES.thalia;
   }, [voice]);
@@ -33,7 +34,7 @@ export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, vol
   const entropy = volume * 15;
 
   return (
-    <div className={`premium-2d-container ${!hasGreeted ? 'is-loading' : ''}`}>
+    <div className={`premium-2d-container ${!hasGreeted ? 'is-loading' : ''} ${isThinking ? 'is-thinking' : ''}`}>
       {/* SVG Liquid Filter */}
       <svg style={{ position: 'absolute', width: 0, height: 0 }}>
         <defs>
@@ -63,6 +64,13 @@ export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, vol
           ))}
           <div className="blob extra-blur" style={{ background: colors[0], opacity: 0.6 }} />
         </div>
+
+        {/* Thinking Scanner */}
+        {isThinking && (
+          <div className="thinking-scanner">
+             <div className="scanner-line" />
+          </div>
+        )}
 
         {/* Loading Overlay */}
         {!hasGreeted && (
@@ -142,6 +150,36 @@ export const ThreeDOrb: React.FC<ThreeDOrbProps> = ({ phase, isAriaSpeaking, vol
           align-items: center;
           justify-content: center;
           animation: rotateMesh 25s linear infinite;
+        }
+
+        .is-thinking .mesh-gradient {
+          animation-duration: 4s;
+          filter: blur(40px) contrast(1.2);
+        }
+
+        .thinking-scanner {
+          position: absolute;
+          inset: 0;
+          z-index: 4;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          border-radius: 50%;
+        }
+
+        .scanner-line {
+          position: absolute;
+          width: 100%;
+          height: 100%;
+          background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.4), transparent);
+          top: -100%;
+          animation: scan 1.5s infinite ease-in-out;
+        }
+
+        @keyframes scan {
+          0% { top: -100%; }
+          100% { top: 100%; }
         }
 
         .is-loading .mesh-gradient {

@@ -427,7 +427,7 @@ export default function AriaV8() {
   const [duration, setDuration] = useState(10); // minutes
   const [jdTab, setJdTab] = useState<'manual' | 'templates'>('manual');
   const [selectedTmpl, setSelectedTmpl] = useState('');
-  const [voice, setVoice] = useState('thalia');
+  const [voice, setVoice] = useState('asteria');
 
   // Live state
   const [isCallActive, setIsCallActive] = useState(false);
@@ -443,6 +443,7 @@ export default function AriaV8() {
   const [behavior, setBehavior] = useState<BehaviorState>({ candidateMood: 'neutral', ariaMood: 'neutral', softSkills: 5, communication: 5, confidence: 5 });
   const [hasAriaGreeted, setHasAriaGreeted] = useState(false);
   const [isAriaSpeaking, setIsAriaSpeaking] = useState(false);
+  const [isAriaThinking, setIsAriaThinking] = useState(false);
   const [isScoringBg, setIsScoringBg] = useState(false);
   const [callStatus, setCallStatus] = useState('Ready');
   const [usage, setUsage] = useState<Usage>({ tokIn: 0, tokOut: 0 });
@@ -545,7 +546,7 @@ export default function AriaV8() {
     pushContext(ctx, isStart);
   }, [pushContext]);
 
-  useEffect(() => { 
+  useEffect(() => {
     if (isCallActive) {
       slog(`Voice changed to ${voice} — Syncing...`, true);
       pushFullContext();
@@ -726,11 +727,9 @@ export default function AriaV8() {
   const processUserTurn = useCallback(() => {
     const currentPhase = phaseRef.current;
     lastRoleRef.current = 'user';
+    setIsAriaThinking(true);
 
-    // 1. Scoring & Behavior (background)
-    triggerBackgroundScoring();
-
-    // 2. State & Transitions
+    // 1. State & Transitions
     if (currentPhase === 'warmup') {
       // 🚨 ONLY INCREMENT ONCE PER TURN
       if (!turnCountedRef.current) {
@@ -745,6 +744,9 @@ export default function AriaV8() {
         slog('Warmup complete → Starting Technical Interview', true);
       }
       pushFullContext();
+
+      // Fire scoring in background after small delay to let UI/attributes sync first
+      setTimeout(() => triggerBackgroundScoring(), 100);
       return;
     }
 
@@ -783,6 +785,9 @@ export default function AriaV8() {
       }
 
       pushFullContext();
+
+      // Fire scoring in background after small delay to let UI/attributes sync first
+      setTimeout(() => triggerBackgroundScoring(), 100);
       return;
     }
 
@@ -800,6 +805,9 @@ export default function AriaV8() {
         slog('Interview finished', true);
       }
       pushFullContext();
+
+      // Fire scoring in background after small delay
+      setTimeout(() => triggerBackgroundScoring(), 100);
       return;
     }
   }, [pushFullContext, triggerBackgroundScoring, slog]);
@@ -1049,6 +1057,7 @@ export default function AriaV8() {
         if (isAgent) {
           isAriaSpeakingRef.current = true;
           setIsAriaSpeaking(true);
+          setIsAriaThinking(false);
           setCallStatus('Speaking...');
           clearSilenceTimer();
         }
@@ -1061,6 +1070,7 @@ export default function AriaV8() {
         if (agentSpeaking) {
           isAriaSpeakingRef.current = true;
           setIsAriaSpeaking(true);
+          setIsAriaThinking(false);
           setCallStatus('Speaking...');
           clearSilenceTimer();
         } else if (!agentSpeaking && isAriaSpeakingRef.current) {
@@ -1712,6 +1722,7 @@ export default function AriaV8() {
           setDuration={setDuration}
           voice={voice}
           setVoice={setVoice}
+          isThinking={isAriaThinking}
           scores={scores}
           conv={conv}
           behavior={behavior}
