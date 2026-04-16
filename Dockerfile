@@ -1,6 +1,9 @@
 # Stage 1: Build the app
 FROM node:20-alpine AS builder
 
+ARG NEXT_PUBLIC_LIVEKIT_URL
+ENV NEXT_PUBLIC_LIVEKIT_URL=$NEXT_PUBLIC_LIVEKIT_URL
+
 WORKDIR /app
 
 # Install dependencies (using cache)

@@ -30,14 +30,17 @@ services:
     restart: always
 
   ai-interview-app:
-    build: .
+    build:
+      context: .
+      args:
+        - NEXT_PUBLIC_LIVEKIT_URL=ws://140.245.4.122:7880
     ports:
       - "7001:3000"
     environment:
       - NODE_ENV=production
       - LIVEKIT_URL=http://livekit-server:7880
       - LIVEKIT_API_KEY=devkey
-      - LIVEKIT_API_SECRET=secret
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-v32charslongSecretKeyForLivekit123}
     env_file:
       - .env
     depends_on:
