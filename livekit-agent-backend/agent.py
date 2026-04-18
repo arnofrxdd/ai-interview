@@ -1,6 +1,7 @@
 import logging
 import os
 import asyncio
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -21,6 +22,7 @@ logger = logging.getLogger("aria-v8-agent")
 
 # Silence noisy logs
 logging.getLogger("livekit.agents.inference").setLevel(logging.CRITICAL)
+logging.getLogger("livekit.agents.inference.interruption").setLevel(logging.CRITICAL)
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
 logging.getLogger("livekit").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -30,6 +32,12 @@ logging.getLogger("asyncio").setLevel(logging.WARNING)
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR, exist_ok=True)
+
+# Initialize cost log if needed
+COST_LOG_PATH = os.path.join(LOG_DIR, "cost_analysis.md")
+if not os.path.exists(COST_LOG_PATH):
+    with open(COST_LOG_PATH, "w", encoding="utf-8") as f:
+        f.write("# Interview Cost Analysis Log\n\n| Time | Sync ID | Prompt Tokens | Cached Tokens | Completion Tokens |\n| :--- | :--- | :--- | :--- | :--- |\n")
 
 def log_to_file(filename: str, content: str):
     try:
@@ -130,6 +138,10 @@ async def entrypoint(ctx: JobContext):
         attrs = participant.attributes
         sync_id   = attrs.get("sync_id", "")
         new_instr = attrs.get("instructions", "").strip()
+
+        # 🚨 IGNORE: mic toggle events from LiveKit internals
+        if not sync_id and not new_instr:
+            return  # silent ignore, no warning needed
         do_reset  = attrs.get("reset_chat", "false").lower() == "true"
         is_start  = attrs.get("is_start", "false").lower() == "true"
         new_voice = attrs.get("voice", "").strip()
@@ -155,7 +167,6 @@ async def entrypoint(ctx: JobContext):
             return
 
         if not new_instr:
-            logger.warning("⚠️ Received attribute change with empty instructions")
             return
 
         if sync_id and sync_id == last_sync_id:
@@ -206,6 +217,32 @@ async def entrypoint(ctx: JobContext):
         text = getattr(msg, "content", None) or str(msg)
         if isinstance(text, list): text = " ".join(str(p) for p in text)
         logger.info(f"USER  >> {str(text)[:100]}...")
+
+    # ── METRICS ────────────────────────────────────────────────────────────
+    @session.on("metrics_collected")
+    def on_metrics_collected(metrics):
+        # Report usage to frontend for cost calculation
+        try:
+            usage = getattr(metrics, "usage", None)
+            if usage:
+                usage_data = {
+                    "type": "usage",
+                    "tokIn": getattr(usage, "prompt_tokens", 0),
+                    "tokOut": getattr(usage, "completion_tokens", 0),
+                    "tokCached": getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+                }
+                logger.info(f"📊 METRICS collected: {usage_data}")
+                
+                # Persistent log to file
+                with open(os.path.join(LOG_DIR, "cost_analysis.md"), "a", encoding="utf-8") as f:
+                    f.write(f"| {datetime.now().strftime('%H:%M:%S')} | {last_sync_id} | {usage_data['tokIn']} | {usage_data['tokCached']} | {usage_data['tokOut']} |\n")
+
+                asyncio.create_task(ctx.room.local_participant.publish_data(
+                    json.dumps(usage_data),
+                    topic="metrics"
+                ))
+        except Exception as e:
+            logger.error(f"❌ Failed to publish metrics: {e}")
 
     # ── START ──────────────────────────────────────────────────────────────
     await session.start(agent, room=ctx.room)

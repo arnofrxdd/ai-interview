@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Participant, Track } from 'livekit-client';
 import { useTracks } from '@livekit/components-react';
 import { ThreeDOrb } from './ThreeDOrb';
-import { ScoreEntry, ConvEntry, BehaviorState } from './interview2';
+import { ScoreEntry, ConvEntry, BehaviorState, Usage } from './interview2';
 import { ARIA_PROMPTS, PERSONA_PROMPTS } from '../lib/prompts';
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ interface AriaPremiumUIProps {
   behavior: BehaviorState;
   avgScore: number;
   isThinking?: boolean;
+  usage: Usage;
 }
 
 // ─── ORB COMPONENT ───────────────────────────────────────────────────────────
@@ -159,6 +160,22 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
     { id: 'atlas', label: 'Jax', gender: 'M', desc: 'High-Velocity CTO', detail: 'High-pressure startup perspective. Values speed, adaptability, and immediate business impact.', preview: 'Hey there! I am Jax. Ready to dive deep into your architecture and see how you solve complex problems?' },
   ];
 
+  const PRICE = {
+    miniIn: 0.15,
+    miniCached: 0.075,
+    miniOut: 0.60,
+    sttMin: 0.0043,
+    ttsKChar: 0.0150
+  } as const;
+
+  const calculateCost = (u: Usage) => {
+    if (!u) return '0.0000';
+    const llm = (u.tokIn * PRICE.miniIn + u.tokCached * PRICE.miniCached + u.tokOut * PRICE.miniOut) / 1_000_000;
+    const stt = (u.sttSecs / 60) * PRICE.sttMin;
+    const tts = (u.ttsChars / 1000) * PRICE.ttsKChar;
+    return (llm + stt + tts).toFixed(4);
+  };
+
   const activePersona = PERSONA_PROMPTS[props.voice] || ARIA_PROMPTS;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -267,6 +284,10 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
                   <label>Confidence</label>
                   <div className="bar-track"><div className="bar-fill" style={{ width: `${props.behavior.confidence * 10}%` }} /></div>
                 </div>
+                <div className="metric cost">
+                  <label>Session Cost</label>
+                  <div className="cost-val">${calculateCost(props.usage)} <span className="cost-unit">USD</span></div>
+                </div>
               </div>
             </div>
 
@@ -341,6 +362,10 @@ export const AriaPremiumUI: React.FC<AriaPremiumUIProps> = (props) => {
           .metric label { display: block; font-size: 11px; font-weight: 500; color: #666; margin-bottom: 6px; }
           .bar-track { height: 6px; background: #f0f2f5; border-radius: 100px; overflow: hidden; }
           .bar-fill { height: 100%; background: #000; border-radius: 100px; transition: width 1s ease-out; }
+
+          .metric.cost { margin-top: 8px; background: #fafafa; padding: 12px; border-radius: 16px; border: 1px solid #f0f0f0; }
+          .cost-val { font-family: 'Geist Mono', monospace; font-size: 18px; font-weight: 600; color: #111; }
+          .cost-unit { font-size: 10px; color: #888; margin-left: 4px; font-weight: 500; }
 
           .competency-list { display: flex; flex-direction: column; gap: 24px; }
           .comp-item { border-bottom: 1px solid #f5f7f9; padding-bottom: 20px; }

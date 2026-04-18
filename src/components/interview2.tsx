@@ -72,7 +72,13 @@ const SILENCE_TIMEOUT_MS = 20000;
 const SILENCE_POLL_MS = 200;
 const SPEAKING_COOLDOWN_MS = 700;
 
-const PRICE = { miniIn: 0.15, miniOut: 0.60 } as const;
+const PRICE = {
+  miniIn: 0.15,
+  miniCached: 0.075,
+  miniOut: 0.60,
+  sttMin: 0.0043,
+  ttsKChar: 0.0150
+} as const;
 
 const JD_TEMPLATES: Record<string, string> = {
   frontend: `Role: Senior Frontend Engineer\nStack: React.js, TypeScript, Next.js, CSS Architecture, Web Performance, Accessibility.\nExpectations: Build modular, high-performance UIs. Deep understanding of React hooks, state management, rendering optimizations.`,
@@ -127,14 +133,25 @@ export type BehaviorState = {
   confidence: number;
 };
 
-export type Usage = { tokIn: number; tokOut: number };
+export type Usage = {
+  tokIn: number;
+  tokOut: number;
+  tokCached: number;
+  sttSecs: number;
+  ttsChars: number;
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 const scoreColor = (s: number) => s >= 8 ? '#4ade80' : s >= 6 ? '#fbbf24' : s >= 4 ? '#f97316' : '#f87171';
-const cost = (u: Usage) => ((u.tokIn * PRICE.miniIn + u.tokOut * PRICE.miniOut) / 1_000_000).toFixed(4);
+const cost = (u: Usage) => {
+  const llm = (u.tokIn * PRICE.miniIn + u.tokCached * PRICE.miniCached + u.tokOut * PRICE.miniOut) / 1_000_000;
+  const stt = (u.sttSecs / 60) * PRICE.sttMin;
+  const tts = (u.ttsChars / 1000) * PRICE.ttsKChar;
+  return (llm + stt + tts).toFixed(4);
+};
 
 const safeJson = (raw: string): any => {
   try {
@@ -186,6 +203,7 @@ async function callLLM(
   if (d.usage) {
     usageRef.current.tokIn += d.usage.prompt_tokens || 0;
     usageRef.current.tokOut += d.usage.completion_tokens || 0;
+    usageRef.current.tokCached += d.usage.prompt_tokens_details?.cached_tokens || 0;
   }
   return (d.answer as string) || '';
 }
@@ -446,7 +464,7 @@ export default function AriaV8() {
   const [isAriaThinking, setIsAriaThinking] = useState(false);
   const [isScoringBg, setIsScoringBg] = useState(false);
   const [callStatus, setCallStatus] = useState('Ready');
-  const [usage, setUsage] = useState<Usage>({ tokIn: 0, tokOut: 0 });
+  const [usage, setUsage] = useState<Usage>({ tokIn: 0, tokOut: 0, tokCached: 0, sttSecs: 0, ttsChars: 0 });
   const [silenceLeft, setSilenceLeft] = useState<number | null>(null);
   const [statusLogs, setStatusLogs] = useState<{ id: string; msg: string; ok?: boolean }[]>([]);
   const [liveContext, setLiveContext] = useState('');
@@ -462,7 +480,7 @@ export default function AriaV8() {
   const scoresRef = useRef<ScoreEntry[]>([]);
   const convRef = useRef<ConvEntry[]>([]);
   const behaviorRef = useRef<BehaviorState>({ candidateMood: 'neutral', ariaMood: 'neutral', softSkills: 5, communication: 5, confidence: 5 });
-  const usageRef = useRef<Usage>({ tokIn: 0, tokOut: 0 });
+  const usageRef = useRef<Usage>({ tokIn: 0, tokOut: 0, tokCached: 0, sttSecs: 0, ttsChars: 0 });
   const lkRoomRef = useRef<Room | null>(null);
   const candidateNameRef = useRef('');
   const cvSummaryRef = useRef('');
@@ -480,6 +498,7 @@ export default function AriaV8() {
   const silenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceStartRef = useRef(0);
   const silenceCountRef = useRef(0);
+  const userSpeakStartRef = useRef<number>(0);
   const isEndingRef = useRef(false);
   const isStartingRef = useRef(false);
   const interviewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -494,6 +513,8 @@ export default function AriaV8() {
   const lastRoleRef = useRef<'user' | 'ai'>('ai');
   const hasAriaGreetedRef = useRef(false);
   const voiceRef = useRef(voice);
+  const lastPushedContextRef = useRef('');
+  const prevVoiceRef = useRef(voice);
 
   // ── Sync refs ──
   useEffect(() => { phaseRef.current = phase; }, [phase]);
@@ -542,15 +563,20 @@ export default function AriaV8() {
       totalTimeSecs: totalTimeSecsRef.current,
       prompts: activePrompts,
     });
+
+    if (ctx === lastPushedContextRef.current) return;
+    lastPushedContextRef.current = ctx;
+
     const isStart = phaseRef.current === 'warmup' && warmupTurnsRef.current === 0;
     pushContext(ctx, isStart);
   }, [pushContext]);
 
   useEffect(() => {
-    if (isCallActive) {
-      slog(`Voice changed to ${voice} — Syncing...`, true);
-      pushFullContext();
-    }
+    if (!isCallActive) return;
+    if (prevVoiceRef.current === voice) return;
+    prevVoiceRef.current = voice;
+    slog(`Voice changed to ${voice} — Syncing...`, true);
+    pushFullContext();
   }, [voice, isCallActive, pushFullContext, slog]);
 
   // ── Silence timer ──
@@ -566,14 +592,51 @@ export default function AriaV8() {
     if (interviewTimerRef.current) clearInterval(interviewTimerRef.current);
     if (speakingCooldownTimerRef.current) clearTimeout(speakingCooldownTimerRef.current);
     lkRoomRef.current?.disconnect();
+    lkRoomRef.current = null;
     setLkRoom(null);
     setLkToken(null);
     setIsCallActive(false);
     setIsCallEnded(true);
     setCallStatus('Ended');
-    phaseRef.current = 'report';
-    setPhase('report');
-  }, [clearSilenceTimer]);
+    setPhase('ended');
+    setUsage({ ...usageRef.current }); // Final sync
+
+    // ── Final Cost Analysis ──
+    const u = usageRef.current;
+    const llmRaw = (u.tokIn * PRICE.miniIn) / 1000000;
+    const llmCache = (u.tokCached * PRICE.miniCached) / 1000000;
+    const llmOut = (u.tokOut * PRICE.miniOut) / 1000000;
+    const stt = (u.sttSecs / 60) * PRICE.sttMin;
+    const tts = (u.ttsChars / 1000) * PRICE.ttsKChar;
+    const total = llmRaw + llmCache + llmOut + stt + tts;
+
+    const report = `
+# Interview Cost Analysis
+Generated: ${new Date().toLocaleString()}
+Candidate: ${candidateNameRef.current || 'Anonymous'}
+
+## LLM Usage (GPT-4o-mini)
+- Input Tokens (Regular): ${u.tokIn.toLocaleString()} ($${llmRaw.toFixed(6)})
+- Input Tokens (Cached): ${u.tokCached.toLocaleString()} ($${llmCache.toFixed(6)})
+- Output Tokens: ${u.tokOut.toLocaleString()} ($${llmOut.toFixed(6)})
+
+## Deepgram Usage
+- STT (Nova-2): ${(u.sttSecs / 60).toFixed(2)} mins ($${stt.toFixed(6)})
+- TTS (Aura-2): ${u.ttsChars.toLocaleString()} chars ($${tts.toFixed(6)})
+
+---
+**Total Estimated Cost: $${total.toFixed(4)}**
+`;
+    slog(`Finalizing cost report: $${total.toFixed(4)}`, true);
+    // Ideally this goes to a real endpoint, but for now we'll pretend or write if possible
+    fetch('/ai-interview/api/log-cost/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report, candidate: candidateNameRef.current })
+    }).catch(() => {});
+
+    setTimeout(() => setPhase('report'), 1500);
+  }, [lkRoom, slog]);
 
   const triggerHardReset = useCallback(() => {
     const room = lkRoomRef.current;
@@ -589,8 +652,6 @@ export default function AriaV8() {
     // Clear and re-push full context after a brief delay to ensure purge is processed
     setTimeout(() => {
       pushFullContext();
-      // Unset the reset flag immediately so future updates aren't treated as resets
-      room.localParticipant.setAttributes({ reset_chat: 'false' });
     }, 500);
   }, [pushFullContext, slog]);
 
@@ -615,10 +676,6 @@ export default function AriaV8() {
         clearSilenceTimer();
         silenceCountRef.current++;
         if (silenceCountRef.current >= 3) { endCall(); return; }
-        // Nudge via context
-        const activePrompts = PERSONA_PROMPTS[voiceRef.current] || ARIA_PROMPTS;
-        const nudge = activePrompts.SILENCE_NUDGE.replace('${name}', activePrompts.PERSONA.name);
-        pushContext(nudge);
       }
     }, SILENCE_POLL_MS);
   }, [clearSilenceTimer, endCall, pushContext]);
@@ -945,7 +1002,11 @@ export default function AriaV8() {
           usageRef
         );
         const cleaned = nameRaw.replace(/["']/g, '').trim();
-        if (cleaned && cleaned.length > 1 && cleaned.length < 60) setCandidateName(cleaned);
+        if (cleaned && cleaned.length > 1 && cleaned.length < 60) {
+          setCandidateName(cleaned);
+          candidateNameRef.current = cleaned;
+        }
+        setUsage({ ...usageRef.current });
       } catch { /* non-fatal */ }
     } catch { setSetupErr('Failed to read file.'); setCvFileName(''); }
     setIsParsing(false);
@@ -958,6 +1019,13 @@ export default function AriaV8() {
 
     isStartingRef.current = true;
     isEndingRef.current = false;
+
+    // 🚨 ADD THIS: destroy any lingering room
+    if (lkRoomRef.current) {
+      try { lkRoomRef.current.disconnect(); } catch {}
+      lkRoomRef.current = null;
+      setLkRoom(null);
+    }
 
     // Reset everything
     setConv([]); setScores([]); setTopics([]);
@@ -974,7 +1042,7 @@ export default function AriaV8() {
     elapsedMsRef.current = 0;
     lastAiTextRef.current = '';
     lastUserTextRef.current = '';
-    usageRef.current = { tokIn: 0, tokOut: 0 };
+    usageRef.current = { tokIn: 0, tokOut: 0, tokCached: 0, sttSecs: 0, ttsChars: 0 };
     silenceCountRef.current = 0;
     isAriaSpeakingRef.current = false;
     speakingCooldownRef.current = false;
@@ -1004,6 +1072,7 @@ export default function AriaV8() {
         usageRef
       ).then(summary => {
         cvSummaryRef.current = summary;
+        setUsage({ ...usageRef.current });
         slog('CV Cheat Sheet generated ✓', true);
       }).catch(() => {
         // Fallback: use a much larger chunk of the raw text if LLM fails
@@ -1052,6 +1121,11 @@ export default function AriaV8() {
         // 🚨 2. ONLY commit to permanent history when the turn is actually finished
         if (isFinal) {
           handleTranscript(fullText, isAgent, segId, segments);
+          
+          if (isAgent) {
+            usageRef.current.ttsChars += fullText.length;
+          }
+          setUsage({ ...usageRef.current });
         }
 
         if (isAgent) {
@@ -1073,7 +1147,23 @@ export default function AriaV8() {
           setIsAriaThinking(false);
           setCallStatus('Speaking...');
           clearSilenceTimer();
-        } else if (!agentSpeaking && isAriaSpeakingRef.current) {
+        } else if (userSpeaking) {
+          userSpeakStartRef.current = Date.now();
+          setCallStatus('Listening...');
+          silenceCountRef.current = 0;
+          clearSilenceTimer();
+        }
+        
+        // Handle STT tracking when user stops speaking
+        const wasUserSpeaking = userSpeakStartRef.current > 0;
+        if (!userSpeaking && wasUserSpeaking) {
+          const spokenMs = Date.now() - userSpeakStartRef.current;
+          usageRef.current.sttSecs += spokenMs / 1000;
+          userSpeakStartRef.current = 0;
+          setUsage({ ...usageRef.current });
+        }
+
+        if (!agentSpeaking && isAriaSpeakingRef.current) {
           isAriaSpeakingRef.current = false;
           setIsAriaSpeaking(false);
           speakingCooldownRef.current = true;
@@ -1097,6 +1187,21 @@ export default function AriaV8() {
           setCallStatus('Listening...');
           silenceCountRef.current = 0;
           clearSilenceTimer();
+        }
+      });
+
+      roomObj.on(RoomEvent.DataReceived, (payload, participant) => {
+        try {
+          const str = new TextDecoder().decode(payload);
+          const data = JSON.parse(str);
+          if (data.type === 'usage') {
+            usageRef.current.tokIn += data.tokIn || 0;
+            usageRef.current.tokOut += data.tokOut || 0;
+            usageRef.current.tokCached += data.tokCached || 0;
+            setUsage({ ...usageRef.current });
+          }
+        } catch (e) {
+          console.error('[lk] Failed to parse data message:', e);
         }
       });
 
@@ -1727,6 +1832,7 @@ export default function AriaV8() {
           conv={conv}
           behavior={behavior}
           avgScore={avgScore}
+          usage={usage}
         />
       </LiveKitRoom>
     );
