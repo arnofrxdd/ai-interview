@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python
+livekit-agent-backend/venv/
+livekit-agent-backend/__pycache__/
+*.py[cod]
+
+# logs
+livekit-agent-backend/logs/
