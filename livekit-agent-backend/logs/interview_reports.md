@@ -17,3 +17,22 @@ Candidate: Arnav Dalai
 ---
 **Total Estimated Cost: $0.0056**
 
+
+--- [4/18/2026, 11:18:55 PM] [Candidate: Arnav Dalai] ---
+
+# Interview Cost Analysis
+Generated: 4/18/2026, 11:18:55 PM
+Candidate: Arnav Dalai
+
+## LLM Usage (GPT-4o-mini)
+- Input Tokens (Regular): 2,457 ($0.000369)
+- Input Tokens (Cached): 0 ($0.000000)
+- Output Tokens: 949 ($0.000569)
+
+## Deepgram Usage
+- STT (Nova-2): 0.02 mins ($0.000086)
+- TTS (Aura-2): 305 chars ($0.004575)
+
+---
+**Total Estimated Cost: $0.0056**
+

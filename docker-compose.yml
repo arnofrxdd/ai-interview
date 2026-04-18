@@ -36,6 +36,8 @@ services:
       context: .
       args:
         - NEXT_PUBLIC_LIVEKIT_URL=wss://arnavcloud.co.in
+    volumes:
+      - ./livekit-agent-backend/logs:/app/livekit-agent-backend/logs
     ports:
       - "7001:3000"
     environment:
