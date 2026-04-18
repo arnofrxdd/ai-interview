@@ -6,9 +6,8 @@ export async function POST(req: Request) {
   try {
     const { report, candidate } = await req.json();
     
-    // Path to the backend logs directory
-    // We navigate from src/app/api/log-cost to the project root
-    const logDir = path.join(process.cwd(), 'livekit-agent-backend', 'logs');
+    // We log to a central 'logs' directory at the root
+    const logDir = path.join(process.cwd(), 'logs');
     const logFile = path.join(logDir, 'interview_reports.md');
 
     if (!fs.existsSync(logDir)) {

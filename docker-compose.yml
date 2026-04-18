@@ -5,7 +5,7 @@ services:
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
     environment:
-      - LIVEKIT_IP=${PUBLIC_IP:-127.0.0.1} # Change this in .env or via shell
+      - LIVEKIT_IP=${PUBLIC_IP:-127.0.0.1}
     volumes:
       - ./livekit-server/livekit.yaml:/etc/livekit.yaml
     ports:
@@ -45,6 +45,8 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-v32charslongSecretKeyForLivekit123}
     env_file:
       - .env
+    volumes:
+      - ./livekit-agent-backend/logs:/app/logs
     depends_on:
       - livekit-server
     restart: always
